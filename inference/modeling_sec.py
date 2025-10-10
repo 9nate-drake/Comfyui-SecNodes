@@ -8,7 +8,19 @@ import warnings
 from typing import Any, List, Optional, Tuple, Union
 
 import torchvision.transforms as T
-from torchvision.transforms.functional import InterpolationMode
+# Handle torchvision version compatibility for InterpolationMode
+try:
+    from torchvision.transforms.functional import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except (ImportError, AttributeError):
+    # Fallback to PIL constants for older torchvision or compatibility issues
+    try:
+        from torchvision.transforms import InterpolationMode
+        BICUBIC = InterpolationMode.BICUBIC
+    except (ImportError, AttributeError):
+        # Final fallback to PIL Image constants
+        from PIL import Image
+        BICUBIC = Image.BICUBIC
 
 import torch.utils.checkpoint
 import transformers
@@ -480,7 +492,7 @@ class SeCModel(PreTrainedModel):
 
         self.transformer = T.Compose([
             T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
-            T.Resize((self.image_size, self.image_size), interpolation=InterpolationMode.BICUBIC),
+            T.Resize((self.image_size, self.image_size), interpolation=BICUBIC),
             T.ToTensor(),
             T.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD)
         ])

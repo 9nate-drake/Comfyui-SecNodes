@@ -935,6 +935,18 @@ class SeCVideoSegmentation:
             masks_tensor = torch.stack(output_masks)
             obj_ids_tensor = torch.tensor(output_obj_ids, dtype=torch.int32)
 
+            # Ensure proper ComfyUI MASK format: [batch, height, width]
+            # For video sequences, batch = num_frames, so shape is [num_frames, height, width]
+            # Move to CPU to avoid device issues with downstream nodes
+            if masks_tensor.is_cuda:
+                masks_tensor = masks_tensor.cpu()
+            if obj_ids_tensor.is_cuda:
+                obj_ids_tensor = obj_ids_tensor.cpu()
+
+            # Debug: Print tensor shape for troubleshooting
+            print(f"Output masks shape: {masks_tensor.shape}")  # Should be [num_frames, height, width]
+            print(f"Output obj_ids shape: {obj_ids_tensor.shape}")  # Should be [num_frames]
+
             return (masks_tensor, obj_ids_tensor)
 
         except Exception as e:

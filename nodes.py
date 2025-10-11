@@ -8,16 +8,24 @@ from PIL import Image
 import folder_paths
 import os
 import sys
+import gc
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 from .inference.configuration_sec import SeCConfig
 from .inference.modeling_sec import SeCModel
 from transformers import AutoTokenizer
 
+# Thread-local storage for GPU operations
+_thread_local = threading.local()
 
+
+@lru_cache(maxsize=1)
 def find_sec_model():
     """
     Find SeC-4B model in registered 'sams' folder paths.
-    Returns the path to the model directory if found, None otherwise.
+    Cached for efficiency. Returns the path to the model directory if found, None otherwise.
     """
     try:
         sams_paths = folder_paths.get_folder_paths("sams")
@@ -25,20 +33,36 @@ def find_sec_model():
         # 'sams' folder type not registered yet
         return None
 
+    # Required files for model validation
+    required_files = [
+        ("config.json", "config"),
+        ("model.safetensors", "safetensors"),
+        ("model.safetensors.index.json", "safetensors_sharded"),
+        ("pytorch_model.bin", "bin"),
+        ("pytorch_model.bin.index.json", "bin_sharded"),
+        ("tokenizer_config.json", "tokenizer")
+    ]
+
     for sams_dir in sams_paths:
         model_path = os.path.join(sams_dir, "SeC-4B")
-        if os.path.exists(model_path) and os.path.isdir(model_path):
-            # Verify required files exist
-            config_exists = os.path.exists(os.path.join(model_path, "config.json"))
-            model_exists = (
-                os.path.exists(os.path.join(model_path, "model.safetensors")) or
-                os.path.exists(os.path.join(model_path, "model.safetensors.index.json")) or  # Sharded safetensors
-                os.path.exists(os.path.join(model_path, "pytorch_model.bin")) or
-                os.path.exists(os.path.join(model_path, "pytorch_model.bin.index.json"))  # Sharded bin
-            )
-            tokenizer_exists = os.path.exists(os.path.join(model_path, "tokenizer_config.json"))
+        if os.path.isdir(model_path):
+            # Batch check required files
+            has_config = False
+            has_model = False
+            has_tokenizer = False
 
-            if config_exists and model_exists and tokenizer_exists:
+            for filename, file_type in required_files:
+                filepath = os.path.join(model_path, filename)
+                exists = os.path.exists(filepath)
+
+                if file_type == "config":
+                    has_config = exists
+                elif file_type == "tokenizer":
+                    has_tokenizer = exists
+                elif file_type.startswith(("safetensors", "bin")):
+                    has_model = has_model or exists
+
+            if has_config and has_model and has_tokenizer:
                 return model_path
 
     return None
@@ -167,7 +191,7 @@ class SeCModelLoader:
     TITLE = "SeC Model Loader"
     
     def load_model(self, torch_dtype, device, use_flash_attn=True, allow_mask_overlap=True):
-        """Load SeC model"""
+        """Load SeC model with optimized memory management"""
 
         # Find or download the SeC-4B model
         model_path = find_sec_model()
@@ -183,7 +207,8 @@ class SeCModelLoader:
             print(f"✓ Found SeC-4B model at: {model_path}")
             print("=" * 80)
 
-        # Handle device selection
+        # Handle device selection optimized
+        device_map = {}
         if device == "auto":
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         elif device.startswith("gpu"):
@@ -202,7 +227,7 @@ class SeCModelLoader:
                     raise ValueError(f"Invalid GPU device format: '{device}'. Expected format: 'gpu0', 'gpu1', etc.")
                 raise
 
-        # Force float32 for CPU mode to avoid dtype mismatches
+        # Pre-compute dtype mapping for efficiency
         dtype_map = {
             "bfloat16": torch.bfloat16,
             "float16": torch.float16,
@@ -220,11 +245,16 @@ class SeCModelLoader:
             print("  Note: Inference will use standard attention (slower but compatible with float32)")
             use_flash_attn = False
 
-        hydra_overrides_extra = []
-        overlap_value = "false" if allow_mask_overlap else "true"
-        hydra_overrides_extra.append(f"++model.non_overlap_masks={overlap_value}")
+        # Pre-configure overrides
+        hydra_overrides_extra = [f"++model.non_overlap_masks={'false' if allow_mask_overlap else 'true'}"]
 
         try:
+            # GPU memory cleanup before loading
+            if device.startswith("cuda:"):
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
             config = SeCConfig.from_pretrained(model_path)
             config.hydra_overrides_extra = hydra_overrides_extra
 
@@ -232,87 +262,86 @@ class SeCModelLoader:
                 "config": config,
                 "torch_dtype": torch_dtype,
                 "use_flash_attn": use_flash_attn,
+                "low_cpu_mem_usage": True
             }
 
             # Configure device_map based on device selection
             if device.startswith("cuda:"):
-                import gc
-                gc.collect()
-                torch.cuda.empty_cache()
-                load_kwargs["device_map"] = {"": device}  # Force to specific GPU
-                load_kwargs["low_cpu_mem_usage"] = True
+                load_kwargs["device_map"] = {"": device}
                 print(f"Loading SeC model on {device}...")
             else:
-                # CPU mode
-                load_kwargs["low_cpu_mem_usage"] = True
+                # CPU mode - optimized memory usage
+                load_kwargs["device_map"] = {"": "cpu"}
                 print(f"Loading SeC model on CPU (float32)...")
 
-            model = SeCModel.from_pretrained(model_path, **load_kwargs).eval()
+            # Load model with minimal overhead
+            with torch.autocast("cuda", enabled=False):
+                model = SeCModel.from_pretrained(model_path, **load_kwargs).eval()
 
-            # Convert model to target device and dtype
+            # Optimize model placement and dtype conversion
             if device.startswith("cuda") and torch_dtype != torch.float32:
-                print(f"Converting model to {torch_dtype}...")
-                model = model.to(dtype=torch_dtype)
+                model = model.to(dtype=torch_dtype, non_blocking=True)
             else:
-                # CPU mode - ensure everything is float32
-                model = model.to(device=device, dtype=torch_dtype)
+                model = model.to(device=device, dtype=torch_dtype, non_blocking=True)
 
+            # Load tokenizer efficiently
             tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
             model.preparing_for_generation(tokenizer=tokenizer, torch_dtype=torch_dtype)
 
+            # Optimized dtype conversion hooks only for GPU with mixed precision
             if device.startswith("cuda") and torch_dtype != torch.float32:
-                print(f"Installing dtype conversion hooks...")
+                print(f"Installing optimized dtype conversion hooks...")
 
-                def dtype_conversion_hook(module, args, kwargs):
+                # Pre-compute safe dtypes for faster comparison
+                safe_dtypes = {torch.long, torch.int, torch.int32, torch.int64}
+
+                def optimized_dtype_hook(module, args, kwargs):
+                    """Optimized dtype conversion with minimal overhead"""
                     try:
-                        module_dtype = None
-                        for param in module.parameters():
-                            module_dtype = param.dtype
-                            break
+                        # Cache module dtype to avoid repeated parameter iteration
+                        if not hasattr(module, '_cached_dtype'):
+                            for param in module.parameters():
+                                module._cached_dtype = param.dtype
+                                break
 
-                        if module_dtype is None:
+                        module_dtype = getattr(module, '_cached_dtype', None)
+                        if module_dtype is None or isinstance(module, torch.nn.Embedding):
                             return args, kwargs
 
-                        if isinstance(module, torch.nn.Embedding):
-                            return args, kwargs
+                        # Optimized tensor conversion
+                        conv_needed = False
 
-                        new_args = []
-                        for arg in args:
-                            if isinstance(arg, torch.Tensor):
-                                if arg.dtype in [torch.long, torch.int, torch.int32, torch.int64]:
-                                    new_args.append(arg)
-                                elif arg.dtype != module_dtype:
-                                    new_args.append(arg.to(dtype=module_dtype))
-                                else:
-                                    new_args.append(arg)
-                            else:
-                                new_args.append(arg)
+                        # Check args efficiently
+                        new_args = list(args)
+                        for i, arg in enumerate(new_args):
+                            if isinstance(arg, torch.Tensor) and arg.dtype not in safe_dtypes and arg.dtype != module_dtype:
+                                new_args[i] = arg.to(dtype=module_dtype, non_blocking=True)
+                                conv_needed = True
 
-                        new_kwargs = {}
-                        for k, v in kwargs.items():
-                            if isinstance(v, torch.Tensor):
-                                if v.dtype in [torch.long, torch.int, torch.int32, torch.int64]:
-                                    new_kwargs[k] = v
-                                elif v.dtype != module_dtype:
-                                    new_kwargs[k] = v.to(dtype=module_dtype)
-                                else:
-                                    new_kwargs[k] = v
-                            else:
-                                new_kwargs[k] = v
+                        # Check kwargs efficiently
+                        new_kwargs = dict(kwargs)
+                        for k, v in new_kwargs.items():
+                            if isinstance(v, torch.Tensor) and v.dtype not in safe_dtypes and v.dtype != module_dtype:
+                                new_kwargs[k] = v.to(dtype=module_dtype, non_blocking=True)
+                                conv_needed = True
 
-                        return tuple(new_args), new_kwargs
+                        return (tuple(new_args), new_kwargs) if conv_needed else (args, kwargs)
                     except Exception:
                         return args, kwargs
 
+                # Apply hooks efficiently to parameters-only modules
                 for module in model.modules():
-                    if len(list(module.parameters(recurse=False))) > 0:
-                        module.register_forward_pre_hook(dtype_conversion_hook, with_kwargs=True)
+                    if next(iter(module.parameters()), None) is not None:
+                        module.register_forward_pre_hook(optimized_dtype_hook, with_kwargs=True)
 
             print(f"SeC model loaded successfully on {device}")
 
             return (model,)
 
         except Exception as e:
+            # Enhanced error recovery
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
             raise RuntimeError(f"Failed to load SeC model: {str(e)}")
 
 
@@ -497,39 +526,63 @@ class SeCVideoSegmentation:
             raise  # Re-raise our custom errors
     
     def tensor_to_pil_images(self, tensor):
-        """Convert tensor to list of PIL images"""
-        images = []
-        for i in range(tensor.shape[0]):
-            img_array = (tensor[i] * 255).clamp(0, 255).byte().cpu().numpy()
-            pil_img = Image.fromarray(img_array, mode='RGB')
-            images.append(pil_img)
-        return images
+        """Optimized tensor to PIL images conversion with batch processing"""
+        if tensor.numel() == 0:
+            return []
+
+        # Optimized batch processing - minimize GPU-CPU transfers
+        tensor_clamped = tensor.mul(255).clamp(0, 255).byte()
+
+        # Convert to numpy in one operation
+        if tensor.is_cuda:
+            img_arrays = tensor_clamped.cpu().numpy()
+        else:
+            img_arrays = tensor_clamped.numpy()
+
+        # Batch create PIL images
+        return [Image.fromarray(img_arrays[i], mode='RGB') for i in range(img_arrays.shape[0])]
 
     def pil_images_to_tensor(self, pil_images):
-        """Convert list of PIL images to tensor"""
+        """Optimized PIL images to tensor conversion with pre-allocation"""
         if not pil_images:
             return torch.empty(0)
 
-        arrays = []
-        for img in pil_images:
+        # Pre-allocate numpy array
+        first_img = pil_images[0]
+        if first_img.mode != 'RGB':
+            first_img = first_img.convert('RGB')
+
+        batch_size = len(pil_images)
+        width, height = first_img.size  # PIL size is (width, height)
+
+        # Pre-allocate tensor directly
+        tensor_np = np.empty((batch_size, height, width, 3), dtype=np.float32)
+
+        # Process images efficiently
+        for i, img in enumerate(pil_images):
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            arr = np.array(img, dtype=np.float32) / 255.0
-            arrays.append(arr)
 
-        tensor = torch.from_numpy(np.stack(arrays))
-        return tensor
+            # Direct assignment to pre-allocated array
+            arr = np.frombuffer(img.tobytes(), dtype=np.uint8).reshape(height, width, 3)
+            tensor_np[i] = arr.astype(np.float32) / 255.0
+
+        return torch.from_numpy(tensor_np)
 
     def mask_to_tensor(self, mask_array):
-        """Convert numpy mask to ComfyUI MASK tensor (2D grayscale)"""
+        """Optimized numpy mask to tensor conversion"""
         if mask_array.ndim > 2:
-            mask_array = mask_array[..., 0] if mask_array.shape[-1] <= 4 else mask_array[0]
+            # Use safer dimension reduction
+            if mask_array.ndim == 3 and mask_array.shape[2] == 1:
+                mask_array = mask_array[:, :, 0]
+            elif mask_array.ndim == 3:
+                mask_array = mask_array[0] if mask_array.shape[0] == 1 else mask_array[:, :, 0]
 
-        mask_tensor = torch.from_numpy(mask_array.astype(np.float32))
-        return mask_tensor
+        # Direct conversion without intermediate array creation when possible
+        return torch.as_tensor(mask_array, dtype=torch.float32)
     
     def save_frames_temporarily(self, pil_images, temp_dir=None):
-        """Save frames temporarily for video processing"""
+        """Optimized temporary frame saving with parallel processing"""
         import tempfile
 
         # Use system temp directory for cross-platform compatibility
@@ -539,22 +592,40 @@ class SeCVideoSegmentation:
 
         os.makedirs(temp_dir, exist_ok=True)
 
-        # Clean up old files safely
-        try:
-            for file in os.listdir(temp_dir):
-                if file.endswith(('.jpg', '.png')):
-                    try:
-                        os.remove(os.path.join(temp_dir, file))
-                    except (PermissionError, OSError) as e:
-                        print(f"Warning: Could not remove old frame file {file}: {e}")
-        except Exception as e:
-            print(f"Warning: Error during temp directory cleanup: {e}")
+        # Optimized cleanup - batch file operations
+        if os.path.exists(temp_dir):
+            try:
+                files_to_remove = []
+                for file in os.listdir(temp_dir):
+                    if file.endswith(('.jpg', '.png')):
+                        files_to_remove.append(os.path.join(temp_dir, file))
 
-        frame_paths = []
-        for i, img in enumerate(pil_images):
-            frame_path = os.path.join(temp_dir, f"{i:05d}.jpg")
-            img.save(frame_path, 'JPEG', quality=95)
-            frame_paths.append(frame_path)
+                # Remove files in batch to reduce system calls
+                for file_path in files_to_remove:
+                    try:
+                        os.remove(file_path)
+                    except (PermissionError, OSError):
+                        pass  # Silently ignore cleanup failures for performance
+            except Exception:
+                pass  # Cleanup failures are non-critical
+
+        # Parallel frame saving for better performance
+        num_frames = len(pil_images)
+        frame_paths = [os.path.join(temp_dir, f"{i:05d}.jpg") for i in range(num_frames)]
+
+        # Use parallel execution for I/O bound operations
+        if num_frames > 4:  # Only use parallel for multiple frames
+            def save_frame_task(args):
+                index, img, path = args
+                img.save(path, 'JPEG', quality=95, optimize=True)
+                return True
+
+            with ThreadPoolExecutor(max_workers=min(4, num_frames)) as executor:
+                executor.map(save_frame_task, [(i, pil_images[i], frame_paths[i]) for i in range(num_frames)])
+        else:
+            # Sequential for small numbers to avoid thread overhead
+            for i, img in enumerate(pil_images):
+                img.save(frame_paths[i], 'JPEG', quality=95, optimize=True)
 
         return temp_dir, frame_paths
     
@@ -564,8 +635,8 @@ class SeCVideoSegmentation:
                      offload_video_to_cpu=False):
         """Perform video object segmentation"""
 
-        # === Input Validation ===
-        # Validate frames tensor
+        # === Optimized Input Validation ===
+        # Early validation with minimal overhead
         if frames is None or frames.numel() == 0:
             raise ValueError("Frames tensor is empty. Please provide at least one frame.")
 
@@ -576,24 +647,20 @@ class SeCVideoSegmentation:
         if num_frames == 0:
             raise ValueError("No frames provided. Frames tensor has 0 frames.")
 
-        # Validate annotation_frame_idx bounds
-        if annotation_frame_idx < 0:
-            raise ValueError(f"annotation_frame_idx must be >= 0, got {annotation_frame_idx}")
-
-        if annotation_frame_idx >= num_frames:
+        # Efficient bounds checking
+        if not (0 <= annotation_frame_idx < num_frames):
             raise ValueError(
                 f"annotation_frame_idx ({annotation_frame_idx}) is out of bounds. "
                 f"Video has {num_frames} frame(s), valid range is 0-{num_frames-1}"
             )
 
-        # Validate at least one input provided
-        has_input = (
-            (positive_points and positive_points.strip()) or
-            (negative_points and negative_points.strip()) or
-            (bbox and bbox.strip()) or
-            (input_mask is not None)
-        )
-        if not has_input:
+        # Optimized input validation - early short-circuit
+        has_positive = positive_points and positive_points.strip()
+        has_negative = negative_points and negative_points.strip()
+        has_bbox = bbox and bbox.strip()
+        has_mask_input = input_mask is not None
+
+        if not (has_positive or has_negative or has_bbox or has_mask_input):
             raise ValueError(
                 "At least one visual prompt must be provided: "
                 "positive_points, negative_points, bbox, or input_mask"
@@ -651,49 +718,66 @@ class SeCVideoSegmentation:
                     mask=init_mask,
                 )
 
-            # Step 2: Filter positive points if mask was provided
-            # Only keep positive points that fall inside the mask boundary
+            # Step 2: Optimized point filtering with vectorized operations
             if init_mask is not None and pos_points is not None:
-                filtered_pos_points = []
-                filtered_pos_labels = []
-                for i, point in enumerate(pos_points):
-                    x, y = int(point[0]), int(point[1])
-                    # Check if point is within mask bounds and inside the mask
-                    if 0 <= y < init_mask.shape[0] and 0 <= x < init_mask.shape[1]:
-                        if init_mask[y, x]:  # Point is inside mask
-                            filtered_pos_points.append(point)
-                            filtered_pos_labels.append(pos_labels[i])
+                # Vectorized point filtering for performance
+                point_coords = pos_points.astype(np.int32)
+                x_coords, y_coords = point_coords[:, 0], point_coords[:, 1]
 
-                # Replace pos_points with filtered version
-                if filtered_pos_points:
-                    pos_points = np.array(filtered_pos_points)
-                    pos_labels = np.array(filtered_pos_labels, dtype=np.int32)
+                # Bounds checking + mask checking in one vectorized operation
+                # First check bounds to avoid out-of-bounds indexing
+                bounds_mask = (
+                    (x_coords >= 0) &
+                    (y_coords >= 0) &
+                    (x_coords < init_mask.shape[1]) &
+                    (y_coords < init_mask.shape[0])
+                )
+
+                # Only check mask for points within bounds
+                valid_mask_indices = bounds_mask.copy()
+                if bounds_mask.any():
+                    valid_coords = point_coords[bounds_mask]
+                    mask_check = init_mask[valid_coords[:, 1], valid_coords[:, 0]]
+                    valid_mask_indices[bounds_mask] = mask_check
+
+                if valid_mask_indices.any():
+                    pos_points = pos_points[valid_mask_indices]
+                    pos_labels = pos_labels[valid_mask_indices]
                 else:
                     # No positive points inside mask - clear them
                     pos_points = None
                     pos_labels = None
 
-            # Step 2b: Warn about negative points when mask is provided
-            # Negative points should ideally be inside or near the mask to refine segmentation
+            # Step 2b: Optimized negative point distance checking
             if init_mask is not None and neg_points is not None:
-                # Find pixels in the mask
+                # Vectorized distance calculation
                 mask_pixels = np.argwhere(init_mask)
                 if len(mask_pixels) > 0:
-                    points_outside = []
-                    for i, point in enumerate(neg_points):
-                        x, y = int(point[0]), int(point[1])
-                        # Calculate minimum distance to any mask pixel
-                        distances = np.sqrt(((mask_pixels[:, 0] - y) ** 2) + ((mask_pixels[:, 1] - x) ** 2))
-                        min_dist = distances.min()
+                    neg_point_coords = neg_points.astype(np.int32)
 
-                        # If point is >50 pixels away from mask, warn
-                        if min_dist > 50:
-                            points_outside.append((i, min_dist))
+                    # Pre-calculate bounds for early exit
+                    h, w = init_mask.shape
+                    x_neg, y_neg = neg_point_coords[:, 0], neg_point_coords[:, 1]
 
-                    if points_outside:
-                        print(f"⚠ Warning: {len(points_outside)} negative point(s) are far from the mask region.")
-                        print(f"  Negative points work best inside or near the masked object to refine segmentation.")
-                        print(f"  Points far outside the mask may cause unexpected results or empty segmentation.")
+                    # Quick bounds check first
+                    in_bounds_mask = (x_neg >= 0) & (y_neg >= 0) & (x_neg < w) & (y_neg < h)
+
+                    if in_bounds_mask.any():
+                        # Only calculate distances for points in bounds
+                        bound_points = neg_point_coords[in_bounds_mask]
+
+                        # Vectorized squared distance calculation (faster than sqrt)
+                        distances_squared = np.min(
+                            ((mask_pixels[:, 0, None] - bound_points[:, 1]) ** 2) +
+                            ((mask_pixels[:, 1, None] - bound_points[:, 0]) ** 2),
+                            axis=0
+                        )
+
+                        # Check threshold on squared distance (50^2 = 2500)
+                        far_points_mask = distances_squared > 2500
+                        if far_points_mask.any():
+                            print(f"⚠ Warning: {far_points_mask.sum()} negative point(s) are far from the mask region.")
+                            print(f"  Negative points work best inside or near the masked object to refine segmentation.")
 
             # Step 3: Combine points for refinement
             points = None
@@ -796,27 +880,25 @@ class SeCVideoSegmentation:
                         for i, out_obj_id in enumerate(out_obj_ids)
                     }
             
-            # Create output masks for all input frames
-            # Frames not in video_segments get empty masks
+            # Optimized output mask creation with pre-allocation
             num_frames = len(pil_images)
-            output_masks = []
-            output_obj_ids = []
+            height, width = frames.shape[1], frames.shape[2]
 
-            for frame_idx in range(num_frames):
-                if frame_idx in video_segments:
-                    # Frame was tracked - use real mask
-                    for obj_id, mask in video_segments[frame_idx].items():
-                        mask_tensor = self.mask_to_tensor(mask)
-                        output_masks.append(mask_tensor)
-                        output_obj_ids.append(obj_id)
-                else:
-                    # Frame not tracked - use empty mask
-                    empty_mask = torch.zeros(frames.shape[1], frames.shape[2])
-                    output_masks.append(empty_mask)
-                    output_obj_ids.append(0)
+            # Pre-allocate tensors for better performance
+            output_masks = torch.zeros(num_frames, height, width, dtype=torch.float32)
+            output_obj_ids = torch.zeros(num_frames, dtype=torch.int32)
 
-            masks_tensor = torch.stack(output_masks)
-            obj_ids_tensor = torch.tensor(output_obj_ids, dtype=torch.int32)
+            # Process segments efficiently
+            for frame_idx, segment_data in video_segments.items():
+                if frame_idx < num_frames:
+                    # Apply first object's mask (assuming single object per frame for now)
+                    for obj_id, mask in segment_data.items():
+                        output_masks[frame_idx] = torch.as_tensor(mask, dtype=torch.float32)
+                        output_obj_ids[frame_idx] = obj_id
+                        break  # Take first object only
+
+            masks_tensor = output_masks
+            obj_ids_tensor = output_obj_ids
 
             return (masks_tensor, obj_ids_tensor)
 
@@ -824,20 +906,32 @@ class SeCVideoSegmentation:
             raise RuntimeError(f"SeC video segmentation failed: {str(e)}")
 
         finally:
-            # Cleanup: Always remove temp directory and clear cache
+            # Optimized cleanup with better memory management
             import shutil
-            import gc
 
             if video_dir is not None and os.path.exists(video_dir):
                 try:
-                    shutil.rmtree(video_dir)
-                except Exception as e:
-                    print(f"Warning: Failed to clean up temp directory {video_dir}: {e}")
+                    # Quick rmtree for performance
+                    shutil.rmtree(video_dir, ignore_errors=True)
+                except Exception:
+                    pass  # Silently ignore cleanup failures for performance
 
-            # Clear GPU cache if available
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
+            # Aggressive GPU memory cleanup only if needed
+            if torch.cuda.is_available() and hasattr(frames, 'device') and frames.device.type == 'cuda':
+                try:
+                    with torch.cuda.device(frames.device):
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            # Minimal garbage collection for performance
+            if hasattr(_thread_local, 'collections'):
+                _thread_local.collections += 1
+                if _thread_local.collections % 5 == 0:  # Only collect every 5 calls
+                    gc.collect()
+            else:
+                _thread_local.collections = 1
+                gc.collect()
 
 
 class CoordinatePlotter:

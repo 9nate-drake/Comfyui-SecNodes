@@ -935,6 +935,10 @@ class SeCVideoSegmentation:
             masks_tensor = torch.stack(output_masks)
             obj_ids_tensor = torch.tensor(output_obj_ids, dtype=torch.int32)
 
+            # Remove extra dimensions if present - fix [batch, 1, height, width] -> [batch, height, width]
+            if masks_tensor.dim() == 4 and masks_tensor.shape[1] == 1:
+                masks_tensor = masks_tensor.squeeze(1)  # Remove the extra dimension
+
             # Ensure proper ComfyUI MASK format: [batch, height, width]
             # For video sequences, batch = num_frames, so shape is [num_frames, height, width]
             # Move to CPU to avoid device issues with downstream nodes

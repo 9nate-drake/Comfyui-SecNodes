@@ -359,19 +359,19 @@ class MemoryVideoHandler:
             json.dump(frame_info, f)
 
     def _fallback_disk_initialization(self, model, offload_video_to_cpu, offload_state_to_cpu):
-        """Fallback: optimized disk I/O with minimal quality loss"""
+        """Fallback: optimized disk I/O with JPEG for model compatibility"""
         import tempfile
 
         temp_dir = tempfile.mkdtemp(prefix="sec_optimized_")
         frame_paths = []
 
-        # High-quality, fast format - use lossless compression
+        # Use JPEG format as required by SAM2 model (line 246 in misc.py)
         for i, img_array in enumerate(self.frame_arrays):
-            frame_path = os.path.join(temp_dir, f"{i:05d}.png")
-            # Use lossless PNG to avoid quality degradation from JPEG
+            frame_path = os.path.join(temp_dir, f"{i:05d}.jpg")
+            # Use high-quality JPEG to minimize quality loss
             from PIL import Image
             img = Image.fromarray(img_array)
-            img.save(frame_path, 'PNG', optimize=False, compress_level=1)  # Fastest compression
+            img.save(frame_path, 'JPEG', quality=97, optimize=True)  # High quality, optimized
             frame_paths.append(frame_path)
 
         self.temp_dir = temp_dir

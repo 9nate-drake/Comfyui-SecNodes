@@ -495,9 +495,8 @@ class SeCVideoSegmentation:
                     "default": "",
                     "tooltip": "Negative click coordinates as JSON: '[{\"x\": 100, \"y\": 200}]'"
                 }),
-                "bbox": ("STRING", {
-                    "default": "",
-                    "tooltip": "Bounding box as 'x_min,y_min,x_max,y_max'"
+                "bbox": ("BBOX", {
+                    "tooltip": "Bounding box as (x_min, y_min, x_max, y_max) or (x, y, width, height) tuple. Compatible with KJNodes Points Editor bbox output."
                 }),
                 "input_mask": ("MASK", {
                     "tooltip": "Binary mask for object initialization"
@@ -622,34 +621,104 @@ class SeCVideoSegmentation:
             print(f"Error parsing points: {e}")
             return None, None, [str(e)]
     
-    def parse_bbox(self, bbox_str):
-        """Parse bounding box from string and validate"""
-        if not bbox_str or not bbox_str.strip():
+    def parse_bbox(self, bbox):
+        """Parse bounding box from BBOX type (tuple/list/dict) and validate
+
+        Supports multiple formats:
+        - KJNodes: [{'startX': x, 'startY': y, 'endX': x2, 'endY': y2}]
+        - Tuple/list: (x1, y1, x2, y2) or (x, y, width, height)
+        - Dict: {'startX': x, 'startY': y, 'endX': x2, 'endY': y2}
+        """
+        if bbox is None:
             return None
 
         try:
-            coords = [float(x.strip()) for x in bbox_str.strip().split(',')]
+            coords = None
 
-            if len(coords) != 4:
-                raise ValueError(f"Bounding box must have 4 coordinates, got {len(coords)}")
+            # Try to extract coordinates regardless of type checks
+            # This handles cases where ComfyUI wraps data in unexpected ways
+            if hasattr(bbox, '__iter__') and not isinstance(bbox, (str, bytes)):
+                # It's some kind of sequence
+                try:
+                    bbox_list = list(bbox)
 
+                    if len(bbox_list) == 0:
+                        return None
+
+                    first_elem = bbox_list[0]
+
+                    # Try to access as dict-like (KJNodes format)
+                    try:
+                        # Use getitem access instead of isinstance check
+                        if hasattr(first_elem, '__getitem__'):
+                            try:
+                                x1 = float(first_elem['startX'])
+                                y1 = float(first_elem['startY'])
+                                x2 = float(first_elem['endX'])
+                                y2 = float(first_elem['endY'])
+                                coords = [x1, y1, x2, y2]
+                            except (KeyError, TypeError):
+                                # Not dict format, might be numeric sequence
+                                pass
+
+                        # If still no coords, try as numeric sequence
+                        if coords is None:
+                            if len(bbox_list) == 4:
+                                # Direct 4-element tuple/list: (x1, y1, x2, y2)
+                                coords = [float(x) for x in bbox_list]
+                            elif hasattr(first_elem, '__iter__') and not isinstance(first_elem, (str, bytes)):
+                                # Nested sequence: [[x1, y1, x2, y2]]
+                                inner = list(first_elem)
+                                if len(inner) == 4:
+                                    coords = [float(x) for x in inner]
+
+                    except Exception as e:
+                        raise ValueError(f"Could not extract coordinates from sequence: {e}")
+
+                except Exception as e:
+                    raise ValueError(f"Failed to process bbox as sequence: {e}")
+
+            # Try single dict format
+            elif hasattr(bbox, '__getitem__'):
+                try:
+                    x1 = float(bbox['startX'])
+                    y1 = float(bbox['startY'])
+                    x2 = float(bbox['endX'])
+                    y2 = float(bbox['endY'])
+                    coords = [x1, y1, x2, y2]
+                except (KeyError, TypeError) as e:
+                    raise ValueError(f"Dictionary bbox missing required keys: {e}")
+
+            else:
+                raise ValueError(f"Unsupported bbox type: {type(bbox)}")
+
+            if coords is None:
+                raise ValueError(f"Could not extract coordinates from bbox. Type: {type(bbox)}, Content: {repr(bbox)[:200]}")
+
+            # Handle xywh format (convert to xyxy)
             x1, y1, x2, y2 = coords
+            if x2 < x1 or y2 < y1:
+                # Assume xywh format: (x, y, width, height)
+                width, height = x2, y2
+                x2 = x1 + width
+                y2 = y1 + height
+                coords = [x1, y1, x2, y2]
 
-            # Validate coordinates are sensible
-            if x1 >= x2:
-                raise ValueError(f"Invalid bbox: x1 ({x1}) must be < x2 ({x2})")
-            if y1 >= y2:
-                raise ValueError(f"Invalid bbox: y1 ({y1}) must be < y2 ({y2})")
-
-            if x1 < 0 or y1 < 0:
-                raise ValueError(f"Bounding box coordinates must be non-negative, got x1={x1}, y1={y1}")
+            # Validate coordinates
+            if coords[0] >= coords[2]:
+                raise ValueError(f"Invalid bbox: x1 ({coords[0]}) must be < x2 ({coords[2]})")
+            if coords[1] >= coords[3]:
+                raise ValueError(f"Invalid bbox: y1 ({coords[1]}) must be < y2 ({coords[3]})")
+            if coords[0] < 0 or coords[1] < 0:
+                raise ValueError(f"Bounding box coordinates must be non-negative, got x1={coords[0]}, y1={coords[1]}")
 
             return np.array(coords, dtype=np.float32)
 
-        except ValueError as e:
-            if "could not convert" in str(e):
-                raise ValueError(f"Invalid bbox format: '{bbox_str}'. Expected format: 'x1,y1,x2,y2' with numeric values")
-            raise  # Re-raise our custom errors
+        except (ValueError, TypeError) as e:
+            error_msg = f"Invalid bbox: {str(e)}\n"
+            error_msg += f"Input type: {type(bbox)}\n"
+            error_msg += f"Input content: {repr(bbox)[:500]}"
+            raise ValueError(error_msg)
     
     def tensor_to_pil_images(self, tensor):
         """Convert tensor to list of PIL images"""
@@ -967,7 +1036,7 @@ class SeCVideoSegmentation:
             return False
 
     def segment_video(self, model, frames, positive_points="", negative_points="",
-                     bbox="", input_mask=None, tracking_direction="forward",
+                     bbox=None, input_mask=None, tracking_direction="forward",
                      annotation_frame_idx=0, object_id=1, max_frames_to_track=-1, mllm_memory_size=12,
                      offload_video_to_cpu=False, auto_unload_model=True):
         """Perform video object segmentation"""
@@ -1009,7 +1078,7 @@ class SeCVideoSegmentation:
         has_input = (
             (positive_points and positive_points.strip()) or
             (negative_points and negative_points.strip()) or
-            (bbox and bbox.strip()) or
+            (bbox is not None) or
             (input_mask is not None)
         )
         if not has_input:

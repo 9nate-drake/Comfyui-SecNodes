@@ -1315,24 +1315,23 @@ class SeCVideoSegmentation:
             
             # Create output masks for all input frames
             # Frames not in video_segments get empty masks
+            # Pre-allocate tensor to avoid VRAM spike from torch.stack()
             num_frames = len(pil_images)
-            output_masks = []
+
+            # Pre-allocate output tensor (avoids memory spike at the end)
+            masks_tensor = torch.zeros(num_frames, frames.shape[1], frames.shape[2], dtype=torch.float32)
             output_obj_ids = []
 
             for frame_idx in range(num_frames):
                 if frame_idx in video_segments:
                     # Frame was tracked - use real mask
                     for obj_id, mask in video_segments[frame_idx].items():
-                        mask_tensor = self.mask_to_tensor(mask)
-                        output_masks.append(mask_tensor)
+                        masks_tensor[frame_idx] = torch.from_numpy(mask.astype(np.float32))
                         output_obj_ids.append(obj_id)
                 else:
-                    # Frame not tracked - use empty mask
-                    empty_mask = torch.zeros(frames.shape[1], frames.shape[2])
-                    output_masks.append(empty_mask)
+                    # Frame not tracked - already zero-initialized
                     output_obj_ids.append(0)
 
-            masks_tensor = torch.stack(output_masks)
             obj_ids_tensor = torch.tensor(output_obj_ids, dtype=torch.int32)
 
             return (masks_tensor, obj_ids_tensor)

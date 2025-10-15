@@ -711,8 +711,8 @@ def label_img_with_mask(img, mask):
     return frame
 
 def is_scene_change_hsv(img1, img2, threshold=0.35):
-    img1 = cv2.resize(np.array(img1), (1024, 1024))
-    img2 = cv2.resize(np.array(img2), (1024, 1024))
+    img1 = cv2.resize(np.array(img1), (512, 512))
+    img2 = cv2.resize(np.array(img2), (512, 512))
 
     hsv1 = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
     hsv2 = cv2.cvtColor(img2, cv2.COLOR_BGR2HSV)

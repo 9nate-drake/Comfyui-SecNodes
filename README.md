@@ -21,7 +21,7 @@ ComfyUI custom nodes for **SeC (Segment Concept)** - State-of-the-art video obje
 **Features:**
 - **Single-file model formats**: Download just one file instead of sharded 4-file format
   - FP16 (7.35GB) - Recommended default
-  - FP8 (3.97GB) - VRAM-constrained systems (RTX 30+ required): **CURRENTLY HAS SCENE CHANGE DETECTION PROBLEMS**
+  - ~~FP8 (3.97GB) - VRAM-constrained systems (RTX 30+ required):~~ 
   - BF16 (7.35GB) - Alternative to FP16
   - FP32 (14.14GB) - Full precision
 - Model loader supports multiple precision formats with auto-detection

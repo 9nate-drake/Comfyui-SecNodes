@@ -91,9 +91,9 @@ def apply_fp8_weight_only_quantization(model, precision_str):
             except Exception as e:
                 print(f"  Warning: Could not quantize Language Model: {e}")
 
-        if hasattr(model, 'vision_encoder'):
+        if hasattr(model, 'vision_model'):
             try:
-                quantize_(model.vision_encoder, int8_weight_only())
+                quantize_(model.vision_model, int8_weight_only())
                 quantized_components.append("Vision")
             except Exception as e:
                 print(f"  Warning: Could not quantize Vision Model: {e}")
@@ -807,7 +807,7 @@ class SeCVideoSegmentation:
             components_deleted = []
 
             # Main components that take the most memory
-            main_components = ['vision_encoder', 'language_model', 'grounding_encoder', 'tokenizer']
+            main_components = ['vision_model', 'language_model', 'grounding_encoder', 'tokenizer']
             for component in main_components:
                 if hasattr(model, component):
                     try:

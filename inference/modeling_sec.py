@@ -583,11 +583,8 @@ class SeCModel(PreTrainedModel):
                     _mllm_memory = [mllm_memory[0]] + mllm_memory[-(mllm_memory_size-1):]
                 else:
                     _mllm_memory = mllm_memory
-                
-                if False in flags:
-                    _update_flag = False
-                    language_embd = None
-                else:
+
+                if True in flags:
                     _update_flag = True
                     video = []
                     for mem_frame_idx, mem_mask in _mllm_memory:
@@ -598,6 +595,9 @@ class SeCModel(PreTrainedModel):
                     text = "<image>Please segment the object in the last frame based on the object labeled in the first several images."
                     specific_language_embd = self.predict_forward(video=video, text=text)
                     language_embd = specific_language_embd.unsqueeze(0)
+                else:
+                    _update_flag = False
+                    language_embd = None
 
 
                 current_out, pred_masks = self.grounding_encoder._run_single_frame_inference(
@@ -714,8 +714,8 @@ def is_scene_change_hsv(img1, img2, threshold=0.35):
     img1 = cv2.resize(np.array(img1), (512, 512))
     img2 = cv2.resize(np.array(img2), (512, 512))
 
-    hsv1 = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
-    hsv2 = cv2.cvtColor(img2, cv2.COLOR_BGR2HSV)
+    hsv1 = cv2.cvtColor(img1, cv2.COLOR_RGB2HSV)
+    hsv2 = cv2.cvtColor(img2, cv2.COLOR_RGB2HSV)
 
     hist1 = cv2.calcHist([hsv1], [0, 1], None, [60, 80], [0, 180, 0, 256])
     hist2 = cv2.calcHist([hsv2], [0, 1], None, [60, 80], [0, 180, 0, 256])

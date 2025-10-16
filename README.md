@@ -16,16 +16,9 @@ ComfyUI custom nodes for **SeC (Segment Concept)** - State-of-the-art video obje
 
 **Full Technical Details:** See [CHANGELOG.md](CHANGELOG.md) for comprehensive investigation and FP8 failure analysis.
 
-### v1.1 (2025-10-13) - Single-File Models & FP8 Support
+### v1.1 (2025-10-13) - Single-File Models
 
-**Features:**
 - **Single-file model formats**: Download just one file instead of sharded 4-file format
-  - FP16 (7.35GB) - Recommended default
-  - BF16 (7.35GB) - Alternative to FP16
-  - FP32 (14.14GB) - Full precision
-- Model loader supports multiple precision formats with auto-detection
-- Automatic GPU capability detection
-- Node package added to ComfyUI-Manager for easy install
 
 **Download:** Single-file models available at [https://huggingface.co/VeryAladeen/Sec-4B](https://huggingface.co/VeryAladeen/Sec-4B)
 

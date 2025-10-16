@@ -4,26 +4,31 @@ ComfyUI custom nodes for **SeC (Segment Concept)** - State-of-the-art video obje
 
 ## Changelog
 
+### v1.2 (2025-10-16) - FP8 Removal & Performance Optimizations
+
+⚠️ **IMPORTANT BREAKING CHANGE**: FP8 support has been removed due to fundamental numerical instability issues. **Use FP16 or BF16 models instead.**
+
+**What Changed:**
+- FP8 quantization disabled - produces NaN values in language model embeddings during scene detection
+- All users should migrate to FP16 or BF16 models (same segmentation quality, fully reliable)
+- Memory optimization: Pre-allocated output tensor (saves 600-800MB VRAM spike)
+- Scene detection resolution optimization: 1024x1024 → 512x512 (saves 200-400MB, no quality impact)
+
+**Full Technical Details:** See [CHANGELOG.md](CHANGELOG.md) for comprehensive investigation and FP8 failure analysis.
+
 ### v1.1 (2025-10-13) - Single-File Models & FP8 Support
 
-**New Features:**
+**Features:**
 - **Single-file model formats**: Download just one file instead of sharded 4-file format
   - FP16 (7.35GB) - Recommended default
   - FP8 (3.97GB) - VRAM-constrained systems (RTX 30+ required): **CURRENTLY HAS SCENE CHANGE DETECTION PROBLEMS**
   - BF16 (7.35GB) - Alternative to FP16
   - FP32 (14.14GB) - Full precision
-- **FP8 quantization support**: Automatic weight-only quantization (W8A16) using torchao + Marlin kernels
-  - Saves 1.5-2GB VRAM in real-world usage
-  - Requires RTX 30 series or newer (Ampere+ architecture)
-  - Automatic fallback to FP16 on older GPUs
-
-**Changes:**
-- Model loader now supports multiple precision formats with auto-detection. Retains compatibility with sharded model.
-- Added `torchao>=0.1.0` to requirements.txt for FP8 support
-- Automatic GPU capability detection for FP8 compatibility
+- Model loader supports multiple precision formats with auto-detection
+- Automatic GPU capability detection
 - Node package added to ComfyUI-Manager for easy install
 
-**Download:** New single-file models available at [https://huggingface.co/VeryAladeen/Sec-4B](https://huggingface.co/VeryAladeen/Sec-4B)
+**Download:** Single-file models available at [https://huggingface.co/VeryAladeen/Sec-4B](https://huggingface.co/VeryAladeen/Sec-4B)
 
 ## What is SeC?
 
@@ -109,22 +114,24 @@ The nodes will appear in the "SeC" category.
 
 ## Model Download
 
-**Download ONE of the following model formats based on your VRAM/quality needs:**
+**Download ONE of the following model formats:**
 
 The SeC Model Loader will automatically detect and let you select which model to use. Download from [https://huggingface.co/VeryAladeen/Sec-4B](https://huggingface.co/VeryAladeen/Sec-4B) and place in your `ComfyUI/models/sams/` folder:
 
 - **SeC-4B-fp16.safetensors** (Recommended) - 7.35 GB
   - Best balance of quality and size
   - Works on all CUDA GPUs
-- **SeC-4B-fp8.safetensors** (VRAM-Constrained) - 3.97 GB
-  - **Only use if VRAM limited** (10-12GB systems)
-  - Saves 1.5-2GB VRAM vs FP16 (not 50% - see [note](#understanding-fp8-vram-savings) below)
-  - **Requires RTX 30 series or newer** for VRAM savings
-  - Older GPUs: Falls back to FP16 (you still save on download size)
+  - **Recommended for all systems**
 - **SeC-4B-bf16.safetensors** (Alternative) - 7.35 GB
   - Alternative to FP16, better for some GPUs
 - **SeC-4B-fp32.safetensors** (Full Precision) - 14.14 GB
   - Maximum precision, highest VRAM usage
+  - Better compatibility on some older GPUs
+
+⚠️ **FP8 Support Removed (v1.2)**
+- FP8 quantization has been removed due to numerical instability issues
+- All users should use FP16 or BF16 models instead (same quality, fully reliable)
+- See [CHANGELOG.md](CHANGELOG.md) for full technical investigation
 
 #### Alternative: Original Sharded Model
 
@@ -188,24 +195,25 @@ NOTE: **CURRENTLY HAS SCENE CHANGE DETECTION PROBLEMS**
 
 **Real-world FP8 savings: 1.5-2GB VRAM (not 50%)**
 
-FP8 quantization reduces model weight storage, but total VRAM usage also includes:
-- **Inference activations** (unchanged by quantization): 1-2GB
-- **SAM2 tracking states** (unchanged): 1-2GB
-- **Video frame buffers** (unchanged): 300-500MB
-- **Model weights** (reduced by FP8): ~3GB savings
+**Minimum:** 10GB VRAM
+- Use FP16 or BF16 model
+- Enable `offload_video_to_cpu: True` if you experience VRAM issues
+- Resolution and frame count have minimal VRAM impact when video offloading is enabled
+- VRAM usage remains consistent (~8.7GB) regardless of video resolution or duration
 
-**Result:** 17GB → 15GB (2GB saved) in real-world video segmentation workloads.
+**Recommended:** 16GB+ VRAM
+- Run without offloading for best performance
+- More comfortable for extended workflows and multiple sequential runs
 
-**Hardware Requirements:**
-- **RTX 30 series or newer** (Ampere/Ada/Hopper architecture)
-- Older GPUs: FP8 model falls back to FP16 inference automatically
-- You still save on download size (3.97GB vs 7.35GB)
+**VRAM Management:**
+- `offload_video_to_cpu`: Primary VRAM control - saves ~2-3GB with only ~3% performance impact
+- `mllm_memory_size`: Lower values (5-10) for additional VRAM savings if needed (affects semantic quality slightly)
+- `use_flash_attn`: Enables faster inference (requires RTX 30/40 series or newer)
 
-**When to use FP8:**
-- ✅ 10-12GB VRAM systems (with `offload_video_to_cpu`)
-- ✅ You have RTX 30 series or newer
-- ❌ 16GB+ VRAM - use FP16 instead with 'offload_video_to_cpu'
-- ❌ RTX 20 series or older - no VRAM benefit (but smaller download)
+**Pro Tips:**
+- Onboard/integrated graphics for display output saves additional VRAM on dedicated GPU
+- FP16 is the standard recommendation - best compatibility and reliability
+- GPU supports automatic precision detection and optimization
 
 
 ## Nodes Reference
@@ -215,9 +223,9 @@ Load and configure the SeC model for inference. Automatically detects available 
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| **model_file** | CHOICE | First available | Select which model to load:<br>• FP32 (Full Precision - ~14.5GB)<br>• FP16 (Half Precision - 7.35GB)<br>• BF16 (Brain Float - ~7GB)<br>• FP8 (8-bit Float - 3.97GB)<br>• SeC-4B (Sharded/Original - ~14GB)<br>**Note:** Each model uses its native precision automatically |
+| **model_file** | CHOICE | First available | Select which model to load:<br>• FP32 (Full Precision - ~14.5GB)<br>• FP16 (Half Precision - 7.35GB) - **Recommended**<br>• BF16 (Brain Float - ~7GB)<br>• SeC-4B (Sharded/Original - ~14GB)<br>**Note:** Each model uses its native precision automatically. FP8 is no longer supported (v1.2). |
 | **device** | CHOICE | `auto` | Device selection (dynamically detects available GPUs):<br>• `auto`: gpu0 if available, else CPU (recommended)<br>• `cpu`: Force CPU (automatically converts to float32)<br>• `gpu0`, `gpu1`, etc.: Specific GPU |
-| *use_flash_attn* | BOOLEAN | True | Enable Flash Attention 2 for faster inference.<br>**Note:** Automatically disabled for FP32/FP8 precision (requires FP16/BF16) |
+| *use_flash_attn* | BOOLEAN | True | Enable Flash Attention 2 for faster inference.<br>**Note:** Automatically disabled for FP32 precision (requires FP16/BF16) |
 | *allow_mask_overlap* | BOOLEAN | True | Allow objects to overlap (disable for strict separation) |
 
 **Outputs:** `model`
@@ -225,8 +233,8 @@ Load and configure the SeC model for inference. Automatically detects available 
 **Notes:**
 - **Model Selection**: Dynamically shows available models in `ComfyUI/models/sams/` directory
   - Download at least one model format (see Model Download section above)
-  - Models are loaded in their **native precision** (FP8 stays FP8, no upconversion!)
-  - This preserves all memory benefits of smaller model formats
+  - Models are loaded in their **native precision** (preserves memory benefits of model format)
+  - FP16 and BF16 have identical sizes (7.35GB) - choose based on GPU preference
 - **Config files**: Bundled in this repo - no separate download needed for single-file models
 - **Device options dynamically adapt** to your system:
   - 1 GPU system: Shows `auto`, `cpu`, `gpu0`
@@ -234,7 +242,7 @@ Load and configure the SeC model for inference. Automatically detects available 
   - 3+ GPU system: Shows all available GPUs
   - No GPU: Shows only `auto` and `cpu`
 - **CPU mode**: Automatically converts model to float32 precision (CPU limitation). CPU inference is significantly slower than GPU (~10-20x).
-- **Flash Attention**: Automatically disabled for FP32 and FP8 models (requires FP16/BF16). Standard attention will be used instead.
+- **Flash Attention**: Automatically disabled for FP32 models (requires FP16/BF16). Standard attention will be used instead.
 
 ---
 
@@ -324,17 +332,17 @@ Visualize coordinate points on images for debugging.
 The `mllm_memory_size` parameter controls how many historical keyframes SeC's Large Vision-Language Model uses for semantic understanding:
 
 - **What it does**: Stores frame references (first frame + last N-1 frames) for the LVLM to analyze when scene changes occur
-- **VRAM impact**: None - testing shows values 3-20 use similar VRAM (~11-13GB for typical videos)
+- **VRAM impact**: Minimal - testing shows values 3-20 use similar VRAM (~8.7GB with `offload_video_to_cpu`, ~11-13GB without)
 - **Compute impact**: Higher values mean more frames processed through the vision encoder on scene changes
 - **Quality trade-off**: More keyframes = better object concept understanding in complex scenes, but diminishing returns after ~10-12 frames
 - **Original research**: SeC paper used 7 and achieved SOTA performance (+11.8 over SAM 2.1), emphasizing "quality over quantity" of keyframes
 
 **Recommended Values:**
-- **Default (12)**: Balanced approach - higher than paper's 7 for extra context, but not excessive
-- **Low (5-7)**: Faster inference on simple videos, matches original research setup
-- **High (15-20)**: Maximum semantic context for very complex videos (no VRAM penalty)
+- **Default (12)**: Balanced approach - good quality for most videos
+- **Low (5-7)**: Faster inference, matches original research, ~1-2% VRAM savings
+- **High (15-20)**: Maximum semantic context for complex multi-object scenes (no significant VRAM penalty)
 
-**Why doesn't it affect VRAM?** The parameter stores lightweight frame indices and mask arrays, not full frame tensors. When scene changes occur, frames are loaded from disk on-demand for LVLM processing. The underlying SAM2 architecture supports up to 22 frames.
+**Why minimal VRAM impact?** The parameter stores lightweight frame indices and mask arrays, not full frame tensors. When scene changes occur, frames are loaded from disk on-demand for LVLM processing. The underlying SAM2 architecture supports up to 22 frames.
 
 ## Attribution
 
@@ -355,10 +363,10 @@ This node implements the **SeC-4B** model developed by OpenIXCLab.
 
 
 **CUDA out of memory**:
-- Enable `offload_video_to_cpu` (saves 2-3GB VRAM, only ~3% slower)
-- Also ensure you are using the fp8 variant for maximum VRAM saving
-- Process fewer frames at once (split video into smaller batches)
-- See GPU VRAM recommendations above for your hardware tier
+- **First:** Enable `offload_video_to_cpu: True` (saves ~2-3GB VRAM, only ~3% slower)
+- **Second:** Lower `mllm_memory_size` to 5-10 (reduces computation at scene changes)
+- **Third:** Process fewer frames at once (split video into smaller batches)
+- Use FP16 or BF16 models (confirmed working minimum is 10GB VRAM)
 
 **Slow inference**:
 - Enable `use_flash_attn` in model loader (requires Flash Attention 2)

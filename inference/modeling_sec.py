@@ -52,6 +52,9 @@ except:
 
 logger = logging.get_logger(__name__)
 
+# Debug logging control - disabled by default, enable with SEC_DEBUG=true environment variable
+DEBUG_SEC = os.getenv("SEC_DEBUG", "false").lower() == "true"
+
 def version_cmp(v1, v2, op='eq'):
     import operator
 
@@ -583,11 +586,8 @@ class SeCModel(PreTrainedModel):
                     _mllm_memory = [mllm_memory[0]] + mllm_memory[-(mllm_memory_size-1):]
                 else:
                     _mllm_memory = mllm_memory
-                
-                if False in flags:
-                    _update_flag = False
-                    language_embd = None
-                else:
+
+                if True in flags:
                     _update_flag = True
                     video = []
                     for mem_frame_idx, mem_mask in _mllm_memory:
@@ -598,6 +598,9 @@ class SeCModel(PreTrainedModel):
                     text = "<image>Please segment the object in the last frame based on the object labeled in the first several images."
                     specific_language_embd = self.predict_forward(video=video, text=text)
                     language_embd = specific_language_embd.unsqueeze(0)
+                else:
+                    _update_flag = False
+                    language_embd = None
 
 
                 current_out, pred_masks = self.grounding_encoder._run_single_frame_inference(
@@ -618,11 +621,23 @@ class SeCModel(PreTrainedModel):
             _, video_res_masks = self.grounding_encoder._get_orig_video_res_output(
                 inference_state, pred_masks
             )
+
+            # DEBUG: Log object_score_logits for FP8 analysis
+            obj_score = current_out["object_score_logits"].item()
+            mask_pixels = (video_res_masks[0] > 0.0).sum().item()
+            if DEBUG_SEC:
+                print(f"[MLLM-DEBUG] Frame {frame_idx}: _update_flag={_update_flag}, mask_pixels={mask_pixels}, obj_score={obj_score:.4f}, threshold_pass={obj_score > 1}")
+
             if _update_flag and (video_res_masks[0] > 0.0).sum() != 0 and current_out["object_score_logits"].item() > 1:
+                if DEBUG_SEC:
+                    print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory updated (score passed threshold)")
                 mllm_memory.append((
                     frame_idx,
                     (video_res_masks[0] > 0.0).cpu().numpy()
                 ))
+            elif _update_flag and (video_res_masks[0] > 0.0).sum() != 0:
+                if DEBUG_SEC:
+                    print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory NOT updated (score {obj_score:.4f} <= 1.0 threshold)")
 
             if len(frame_cache) > 10:
                 oldest_frame = min(frame_cache.keys())
@@ -637,7 +652,7 @@ class SeCModel(PreTrainedModel):
         video=None,
         text=None,
         num_seg_token=1
-    ):  
+    ):
         assert image is not None or video is not None
 
         input_dict = {}
@@ -663,7 +678,10 @@ class SeCModel(PreTrainedModel):
             pixel_values = torch.stack(pixel_values).to(self.torch_dtype)
             num_image_tokens = pixel_values.shape[0] * self.patch_token
             num_frames = 1
-        
+
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Input pixel_values dtype={pixel_values.dtype}, shape={pixel_values.shape}, min={pixel_values.min():.4f}, max={pixel_values.max():.4f}")
+
         input_dict['pixel_values'] = pixel_values
         image_token_str = f'{self.IMG_START_TOKEN}' \
                             f'{self.IMG_CONTEXT_TOKEN * num_image_tokens}' \
@@ -691,13 +709,28 @@ class SeCModel(PreTrainedModel):
             'labels': None,
         }
 
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Data pixel_values dtype={data['pixel_values'].dtype}, shape={data['pixel_values'].shape}")
+
         output = self.forward(data)
         seg_token_mask = ids == self.seg_token_idx
         hidden_states = output.hidden_states
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Output hidden_states[-1] dtype={hidden_states[-1].dtype}, shape={hidden_states[-1].shape}")
+
         hidden_states = hidden_states[-1][seg_token_mask]
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] After seg_token_mask: dtype={hidden_states.dtype}, shape={hidden_states.shape}, has_nan={torch.isnan(hidden_states).any()}")
+
         hidden_states = self.text_hidden_fcs(hidden_states)
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] After text_hidden_fcs: dtype={hidden_states.dtype}, shape={hidden_states.shape}, has_nan={torch.isnan(hidden_states).any()}, min={hidden_states.min():.4f}, max={hidden_states.max():.4f}")
+
         _zero = hidden_states.mean() * 0.0
         pred_embeddings = hidden_states + _zero # [n, 256]
+
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Final pred_embeddings: dtype={pred_embeddings.dtype}, shape={pred_embeddings.shape}, has_nan={torch.isnan(pred_embeddings).any()}")
 
         return pred_embeddings
 
@@ -711,11 +744,11 @@ def label_img_with_mask(img, mask):
     return frame
 
 def is_scene_change_hsv(img1, img2, threshold=0.35):
-    img1 = cv2.resize(np.array(img1), (1024, 1024))
-    img2 = cv2.resize(np.array(img2), (1024, 1024))
+    img1 = cv2.resize(np.array(img1), (512, 512))
+    img2 = cv2.resize(np.array(img2), (512, 512))
 
-    hsv1 = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
-    hsv2 = cv2.cvtColor(img2, cv2.COLOR_BGR2HSV)
+    hsv1 = cv2.cvtColor(img1, cv2.COLOR_RGB2HSV)
+    hsv2 = cv2.cvtColor(img2, cv2.COLOR_RGB2HSV)
 
     hist1 = cv2.calcHist([hsv1], [0, 1], None, [60, 80], [0, 180, 0, 256])
     hist2 = cv2.calcHist([hsv2], [0, 1], None, [60, 80], [0, 180, 0, 256])

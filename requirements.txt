@@ -5,7 +5,6 @@
 huggingface_hub>=0.20.0
 peft>=0.10.0
 timm>=0.9.0
-torchao>=0.1.0
 
 # Image processing
 pillow>=8.0.0

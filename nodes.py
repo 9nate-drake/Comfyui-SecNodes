@@ -15,6 +15,9 @@ from .inference.modeling_sec import SeCModel
 from transformers import AutoTokenizer
 from pathlib import Path
 
+# Debug logging control - disabled by default, enable with SEC_DEBUG=true environment variable
+DEBUG_SEC = os.getenv("SEC_DEBUG", "false").lower() == "true"
+
 
 def get_gpu_compute_capability():
     """
@@ -49,110 +52,45 @@ def supports_fp8_quantization():
 
 def apply_fp8_weight_only_quantization(model, precision_str):
     """
-    Apply weight-only FP8 quantization to Linear layers in the model using torchao.
-    Only quantizes Language Model and Vision Model (transformer components).
-    Skips Grounding Encoder (contains Conv2d layers incompatible with FP8).
+    DEPRECATED: FP8 weight-only quantization is no longer supported.
+
+    FP8 quantization using torchao's int8_weight_only produces NaN values in the
+    language model during MLLM inference, breaking semantic tracking at scene changes.
+
+    Quantizing only the vision model provides minimal VRAM savings (~300MB, 6% total)
+    and is not worth the added complexity.
+
+    Use FP16 or BF16 models instead for reliable performance.
 
     Args:
         model: The SeCModel instance
         precision_str: Model precision string (e.g., "fp8", "fp16")
 
     Returns:
-        bool: True if quantization was applied, False otherwise
+        bool: Always False - FP8 quantization disabled
     """
-    print(f"[FP8-DEBUG] apply_fp8_weight_only_quantization called with precision_str='{precision_str}'")
 
-    # Only quantize if:
-    # 1. Model file is FP8 (to benefit from storage savings)
-    # 2. GPU supports FP8 quantization (Ampere+)
-    # 3. Model is on CUDA device
-    if precision_str != "fp8":
-        print(f"[FP8-DEBUG] Skipping quantization: precision_str is '{precision_str}', not 'fp8'")
-        return False
+    # FP8 quantization is deprecated - always return False
+    if precision_str == "fp8":
+        print(f"⚠️  FP8 Model Support Removed")
+        print(f"─" * 70)
+        print(f"FP8 quantization is no longer supported due to numerical instability.")
+        print(f"The language model produces NaN values during scene change detection,")
+        print(f"breaking semantic tracking and making FP8 models unreliable.")
+        print(f"")
+        print(f"✓ Migration Guide:")
+        print(f"  1. Download FP16 or BF16 model instead of FP8")
+        print(f"  2. Load it with this node - everything else works the same")
+        print(f"  3. Model performance will be identical and 100% reliable")
+        print(f"")
+        print(f"📚 Full technical details:")
+        print(f"  .claude/fp8-scene-detection-failure-analysis.md")
+        print(f"")
+        print(f"🔮 Future: Exploring bitsandbytes 4-bit quantization")
+        print(f"  Could provide 6GB savings with better stability")
+        print(f"─" * 70)
 
-    if not supports_fp8_quantization():
-        capability = get_gpu_compute_capability()
-        if capability:
-            major, minor = capability
-            print(f"  GPU compute capability {major}.{minor} does not support FP8 quantization (requires >= 8.6)")
-        else:
-            print(f"  No CUDA GPU detected - FP8 quantization requires Ampere or newer (RTX 30/40 series)")
-        print(f"  Falling back to FP16 inference (you still save 46% on download size!)")
-        return False
-
-    try:
-        # Import torchao quantization functions
-        from torchao.quantization import quantize_, int8_weight_only
-
-        quantized_components = []
-        print(f"[FP8-DEBUG] torchao imported successfully")
-
-        # Quantize Language Model and Vision Model (transformer components)
-        if hasattr(model, 'language_model'):
-            print(f"[FP8-DEBUG] model.language_model exists, attempting quantization...")
-            try:
-                # Count parameters before quantization
-                lm_params_before = sum(p.numel() for p in model.language_model.parameters())
-                print(f"[FP8-DEBUG] Language model parameters before quantization: {lm_params_before:,}")
-
-                quantize_(model.language_model, int8_weight_only())
-
-                # Check if quantization changed anything
-                lm_params_after = sum(p.numel() for p in model.language_model.parameters())
-                print(f"[FP8-DEBUG] Language model parameters after quantization: {lm_params_after:,}")
-                print(f"[FP8-DEBUG] Language model quantization: SUCCESS")
-                quantized_components.append("LLM")
-            except Exception as e:
-                print(f"  ❌ ERROR: Could not quantize Language Model: {e}")
-                import traceback
-                print(f"[FP8-DEBUG] Language Model quantization traceback:")
-                traceback.print_exc()
-        else:
-            print(f"[FP8-DEBUG] model.language_model DOES NOT EXIST - attributes: {[x for x in dir(model) if not x.startswith('_')][:10]}")
-
-        if hasattr(model, 'vision_model'):
-            print(f"[FP8-DEBUG] model.vision_model exists, attempting quantization...")
-            try:
-                # Count parameters before quantization
-                vm_params_before = sum(p.numel() for p in model.vision_model.parameters())
-                print(f"[FP8-DEBUG] Vision model parameters before quantization: {vm_params_before:,}")
-
-                quantize_(model.vision_model, int8_weight_only())
-
-                # Check if quantization changed anything
-                vm_params_after = sum(p.numel() for p in model.vision_model.parameters())
-                print(f"[FP8-DEBUG] Vision model parameters after quantization: {vm_params_after:,}")
-                print(f"[FP8-DEBUG] Vision model quantization: SUCCESS")
-                quantized_components.append("Vision")
-            except Exception as e:
-                print(f"  ❌ ERROR: Could not quantize Vision Model: {e}")
-                import traceback
-                print(f"[FP8-DEBUG] Vision Model quantization traceback:")
-                traceback.print_exc()
-        else:
-            print(f"[FP8-DEBUG] model.vision_model DOES NOT EXIST")
-
-        if quantized_components:
-            print(f"✓ FP8 quantization applied ({', '.join(quantized_components)})")
-            print(f"[FP8-DEBUG] Quantization SUCCESSFUL, returning True")
-            return True
-        else:
-            print("  ❌ WARNING: No components were quantized")
-            print(f"[FP8-DEBUG] Quantization FAILED, returning False")
-            return False
-
-    except ImportError as e:
-        print(f"  ❌ ERROR: torchao not installed - install with: pip install torchao")
-        print(f"[FP8-DEBUG] ImportError: {e}")
-        print("  Falling back to FP16 inference")
-        return False
-    except Exception as e:
-        print(f"  ❌ ERROR: FP8 quantization failed: {e}")
-        print(f"[FP8-DEBUG] Outer exception: {e}")
-        import traceback
-        traceback.print_exc()
-        print("  Falling back to FP16 inference")
-        return False
+    return False
 
 
 def get_repo_config_path():
@@ -484,10 +422,12 @@ class SeCModelLoader:
 
             # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
-                print(f"[FP8-DEBUG] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(model, precision_str)
-                print(f"[FP8-DEBUG] apply_fp8_weight_only_quantization returned: {quantization_result}")
-                if not quantization_result:
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG] apply_fp8_weight_only_quantization returned: {quantization_result}")
+                if not quantization_result and DEBUG_SEC:
                     print(f"[FP8-DEBUG] WARNING: Quantization returned False, model may be running at FP16 without quantization!")
 
             print(f"✓ Model loaded on {device}")
@@ -1057,10 +997,12 @@ class SeCVideoSegmentation:
 
             # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
-                print(f"[FP8-DEBUG-RELOAD] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG-RELOAD] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(fresh_model, precision_str)
-                print(f"[FP8-DEBUG-RELOAD] apply_fp8_weight_only_quantization returned: {quantization_result}")
-                if not quantization_result:
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG-RELOAD] apply_fp8_weight_only_quantization returned: {quantization_result}")
+                if not quantization_result and DEBUG_SEC:
                     print(f"[FP8-DEBUG-RELOAD] WARNING: Quantization returned False, reloaded model may be running at FP16 without quantization!")
 
             # Copy all attributes from fresh model to original model

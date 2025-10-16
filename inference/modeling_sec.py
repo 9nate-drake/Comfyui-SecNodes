@@ -52,6 +52,9 @@ except:
 
 logger = logging.get_logger(__name__)
 
+# Debug logging control - disabled by default, enable with SEC_DEBUG=true environment variable
+DEBUG_SEC = os.getenv("SEC_DEBUG", "false").lower() == "true"
+
 def version_cmp(v1, v2, op='eq'):
     import operator
 
@@ -622,16 +625,19 @@ class SeCModel(PreTrainedModel):
             # DEBUG: Log object_score_logits for FP8 analysis
             obj_score = current_out["object_score_logits"].item()
             mask_pixels = (video_res_masks[0] > 0.0).sum().item()
-            print(f"[MLLM-DEBUG] Frame {frame_idx}: _update_flag={_update_flag}, mask_pixels={mask_pixels}, obj_score={obj_score:.4f}, threshold_pass={obj_score > 1}")
+            if DEBUG_SEC:
+                print(f"[MLLM-DEBUG] Frame {frame_idx}: _update_flag={_update_flag}, mask_pixels={mask_pixels}, obj_score={obj_score:.4f}, threshold_pass={obj_score > 1}")
 
             if _update_flag and (video_res_masks[0] > 0.0).sum() != 0 and current_out["object_score_logits"].item() > 1:
-                print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory updated (score passed threshold)")
+                if DEBUG_SEC:
+                    print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory updated (score passed threshold)")
                 mllm_memory.append((
                     frame_idx,
                     (video_res_masks[0] > 0.0).cpu().numpy()
                 ))
             elif _update_flag and (video_res_masks[0] > 0.0).sum() != 0:
-                print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory NOT updated (score {obj_score:.4f} <= 1.0 threshold)")
+                if DEBUG_SEC:
+                    print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory NOT updated (score {obj_score:.4f} <= 1.0 threshold)")
 
             if len(frame_cache) > 10:
                 oldest_frame = min(frame_cache.keys())
@@ -646,7 +652,7 @@ class SeCModel(PreTrainedModel):
         video=None,
         text=None,
         num_seg_token=1
-    ):  
+    ):
         assert image is not None or video is not None
 
         input_dict = {}
@@ -672,7 +678,10 @@ class SeCModel(PreTrainedModel):
             pixel_values = torch.stack(pixel_values).to(self.torch_dtype)
             num_image_tokens = pixel_values.shape[0] * self.patch_token
             num_frames = 1
-        
+
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Input pixel_values dtype={pixel_values.dtype}, shape={pixel_values.shape}, min={pixel_values.min():.4f}, max={pixel_values.max():.4f}")
+
         input_dict['pixel_values'] = pixel_values
         image_token_str = f'{self.IMG_START_TOKEN}' \
                             f'{self.IMG_CONTEXT_TOKEN * num_image_tokens}' \
@@ -700,13 +709,28 @@ class SeCModel(PreTrainedModel):
             'labels': None,
         }
 
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Data pixel_values dtype={data['pixel_values'].dtype}, shape={data['pixel_values'].shape}")
+
         output = self.forward(data)
         seg_token_mask = ids == self.seg_token_idx
         hidden_states = output.hidden_states
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Output hidden_states[-1] dtype={hidden_states[-1].dtype}, shape={hidden_states[-1].shape}")
+
         hidden_states = hidden_states[-1][seg_token_mask]
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] After seg_token_mask: dtype={hidden_states.dtype}, shape={hidden_states.shape}, has_nan={torch.isnan(hidden_states).any()}")
+
         hidden_states = self.text_hidden_fcs(hidden_states)
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] After text_hidden_fcs: dtype={hidden_states.dtype}, shape={hidden_states.shape}, has_nan={torch.isnan(hidden_states).any()}, min={hidden_states.min():.4f}, max={hidden_states.max():.4f}")
+
         _zero = hidden_states.mean() * 0.0
         pred_embeddings = hidden_states + _zero # [n, 256]
+
+        if DEBUG_SEC:
+            print(f"[MLLM-PREDICT] Final pred_embeddings: dtype={pred_embeddings.dtype}, shape={pred_embeddings.shape}, has_nan={torch.isnan(pred_embeddings).any()}")
 
         return pred_embeddings
 

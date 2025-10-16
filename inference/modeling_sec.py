@@ -618,11 +618,20 @@ class SeCModel(PreTrainedModel):
             _, video_res_masks = self.grounding_encoder._get_orig_video_res_output(
                 inference_state, pred_masks
             )
+
+            # DEBUG: Log object_score_logits for FP8 analysis
+            obj_score = current_out["object_score_logits"].item()
+            mask_pixels = (video_res_masks[0] > 0.0).sum().item()
+            print(f"[MLLM-DEBUG] Frame {frame_idx}: _update_flag={_update_flag}, mask_pixels={mask_pixels}, obj_score={obj_score:.4f}, threshold_pass={obj_score > 1}")
+
             if _update_flag and (video_res_masks[0] > 0.0).sum() != 0 and current_out["object_score_logits"].item() > 1:
+                print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory updated (score passed threshold)")
                 mllm_memory.append((
                     frame_idx,
                     (video_res_masks[0] > 0.0).cpu().numpy()
                 ))
+            elif _update_flag and (video_res_masks[0] > 0.0).sum() != 0:
+                print(f"[MLLM-DEBUG] Frame {frame_idx}: Memory NOT updated (score {obj_score:.4f} <= 1.0 threshold)")
 
             if len(frame_cache) > 10:
                 oldest_frame = min(frame_cache.keys())

@@ -174,37 +174,27 @@ git lfs clone https://huggingface.co/OpenIXCLab/SeC-4B
 - **Windows + Python 3.12**: Use pre-compiled wheels or disable flash attention
 - The node automatically falls back to standard attention if Flash Attention is unavailable
 
-## GPU VRAM Recommendations
+## GPU VRAM Requirements
 
-| VRAM | Resolution | Frames | Model | Key Settings | Performance |
-|------|-----------|--------|-------|--------------|-------------|
-| **10-12GB** | 256x256 - 512x384 | Up to 100 | **FP16**<br>with CPU offload | `offload_video_to_cpu: True`<br>`mllm_memory_size: 5-10`<br>**Minimum viable config** | 6-10 it/s |
-| **16-20GB** | 512x384 - 720p | 100-500 | **FP16 recommended** | Default settings work well<br>`mllm_memory_size: 12-15` | 5-6 it/s |
-| **24GB+** | 720p - 1080p+ | 500+ | **FP16 recommended** | `mllm_memory_size: 15-20` for max quality<br>Can use BF16 if preferred | 4-5 it/s |
+**Minimum:** 10GB VRAM
+- Use FP16 or BF16 model
+- Enable `offload_video_to_cpu: True` if you experience VRAM issues
+- Resolution and frame count have minimal VRAM impact when video offloading is enabled
+- VRAM usage remains consistent (~8.7GB) regardless of video resolution or duration
 
-**Quick Tips:**
-- **FP16 is the standard recommendation** - best compatibility and reliability across all systems
-- **Low on VRAM (10-12GB)?** Enable `offload_video_to_cpu` (saves 2-3GB, only ~3% slower)
-- **Lower `mllm_memory_size`** (5-10) if you need to squeeze into limited VRAM
-- **FP8 has been removed** (v1.2) - use FP16 or BF16 instead for reliable performance
+**Recommended:** 16GB+ VRAM
+- Run without offloading for best performance
+- More comfortable for extended workflows and multiple sequential runs
 
-### FP8 Quantization (Removed in v1.2)
+**VRAM Management:**
+- `offload_video_to_cpu`: Primary VRAM control - saves ~2-3GB with only ~3% performance impact
+- `mllm_memory_size`: Lower values (5-10) for additional VRAM savings if needed (affects semantic quality slightly)
+- `use_flash_attn`: Enables faster inference (requires RTX 30/40 series or newer)
 
-**Status: No longer supported**
-
-FP8 quantization has been removed due to fundamental numerical instability in the language model. During testing, FP8 produces NaN values in embeddings during scene change detection, breaking semantic tracking completely.
-
-**Real-world FP8 analysis:**
-- Would save 1.5-2GB VRAM (not 50% as model size suggests)
-- Quantizing vision-only saves only ~300MB (3% total, not worth complexity)
-- Full LLM quantization produces NaN - not viable
-
-**Why FP16/BF16 instead:**
-- Same memory footprint as FP8 files (7.35GB) - only ~300MB more than FP8
-- Fully reliable performance with no numerical issues
-- Better GPU compatibility across all CUDA hardware
-
-**For detailed investigation:** See [CHANGELOG.md](CHANGELOG.md) for comprehensive technical analysis of FP8 failure and future quantization alternatives being explored.
+**Pro Tips:**
+- Onboard/integrated graphics for display output saves additional VRAM on dedicated GPU
+- FP16 is the standard recommendation - best compatibility and reliability
+- GPU supports automatic precision detection and optimization
 
 
 ## Nodes Reference
@@ -323,17 +313,17 @@ Visualize coordinate points on images for debugging.
 The `mllm_memory_size` parameter controls how many historical keyframes SeC's Large Vision-Language Model uses for semantic understanding:
 
 - **What it does**: Stores frame references (first frame + last N-1 frames) for the LVLM to analyze when scene changes occur
-- **VRAM impact**: None - testing shows values 3-20 use similar VRAM (~11-13GB for typical videos)
+- **VRAM impact**: Minimal - testing shows values 3-20 use similar VRAM (~8.7GB with `offload_video_to_cpu`, ~11-13GB without)
 - **Compute impact**: Higher values mean more frames processed through the vision encoder on scene changes
 - **Quality trade-off**: More keyframes = better object concept understanding in complex scenes, but diminishing returns after ~10-12 frames
 - **Original research**: SeC paper used 7 and achieved SOTA performance (+11.8 over SAM 2.1), emphasizing "quality over quantity" of keyframes
 
 **Recommended Values:**
-- **Default (12)**: Balanced approach - higher than paper's 7 for extra context, but not excessive
-- **Low (5-7)**: Faster inference on simple videos, matches original research setup
-- **High (15-20)**: Maximum semantic context for very complex videos (no VRAM penalty)
+- **Default (12)**: Balanced approach - good quality for most videos
+- **Low (5-7)**: Faster inference, matches original research, ~1-2% VRAM savings
+- **High (15-20)**: Maximum semantic context for complex multi-object scenes (no significant VRAM penalty)
 
-**Why doesn't it affect VRAM?** The parameter stores lightweight frame indices and mask arrays, not full frame tensors. When scene changes occur, frames are loaded from disk on-demand for LVLM processing. The underlying SAM2 architecture supports up to 22 frames.
+**Why minimal VRAM impact?** The parameter stores lightweight frame indices and mask arrays, not full frame tensors. When scene changes occur, frames are loaded from disk on-demand for LVLM processing. The underlying SAM2 architecture supports up to 22 frames.
 
 ## Attribution
 
@@ -354,11 +344,10 @@ This node implements the **SeC-4B** model developed by OpenIXCLab.
 
 
 **CUDA out of memory**:
-- Enable `offload_video_to_cpu` (saves 2-3GB VRAM, only ~3% slower)
-- Lower `mllm_memory_size` (5-10) to reduce computation at scene changes
-- Process fewer frames at once (split video into smaller batches)
-- Use FP16 or BF16 models (FP8 is no longer supported)
-- See GPU VRAM recommendations above for your hardware tier
+- **First:** Enable `offload_video_to_cpu: True` (saves ~2-3GB VRAM, only ~3% slower)
+- **Second:** Lower `mllm_memory_size` to 5-10 (reduces computation at scene changes)
+- **Third:** Process fewer frames at once (split video into smaller batches)
+- Use FP16 or BF16 models (confirmed working minimum is 10GB VRAM)
 
 **Slow inference**:
 - Enable `use_flash_attn` in model loader (requires Flash Attention 2)

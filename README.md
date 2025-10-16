@@ -21,7 +21,6 @@ ComfyUI custom nodes for **SeC (Segment Concept)** - State-of-the-art video obje
 **Features:**
 - **Single-file model formats**: Download just one file instead of sharded 4-file format
   - FP16 (7.35GB) - Recommended default
-  - ~~FP8 (3.97GB) - VRAM-constrained systems (RTX 30+ required):~~ 
   - BF16 (7.35GB) - Alternative to FP16
   - FP32 (14.14GB) - Full precision
 - Model loader supports multiple precision formats with auto-detection
@@ -175,25 +174,7 @@ git lfs clone https://huggingface.co/OpenIXCLab/SeC-4B
 - **Windows + Python 3.12**: Use pre-compiled wheels or disable flash attention
 - The node automatically falls back to standard attention if Flash Attention is unavailable
 
-## GPU VRAM Recommendations
-
-| VRAM | Resolution | Frames | Model | Key Settings | Performance |
-|------|-----------|--------|-------|--------------|-------------|
-| **10-12GB** | 256x256 - 512x384 | Up to 100 | **FP8 only**<br>(RTX 30+ required) | `offload_video_to_cpu: True`<br>`mllm_memory_size: 5-10`<br>**Minimum viable config** | 6-10 it/s |
-| **16-20GB** | 512x384 - 720p | 100-500 | **FP16 recommended** | Default settings work well<br>`mllm_memory_size: 12-15`<br>FP8 optional (saves 1.5-2GB) | 5-6 it/s |
-| **24GB+** | 720p - 1080p+ | 500+ | **FP16 recommended** | `mllm_memory_size: 15-20` for max quality<br>FP8 not needed | 4-5 it/s |
-
-**Quick Tips:**
-- **FP16 is the default recommendation** - better compatibility, easier to use
-- **FP8 is for VRAM-constrained systems only** (10-12GB GPUs)
-- Low on VRAM? Enable `offload_video_to_cpu` (saves 2-3GB, only ~3% slower)
-- Lower `mllm_memory_size` (5-10) if you need to squeeze into limited VRAM
-
-### Understanding FP8 VRAM Savings
-
-NOTE: **CURRENTLY HAS SCENE CHANGE DETECTION PROBLEMS**
-
-**Real-world FP8 savings: 1.5-2GB VRAM (not 50%)**
+## GPU VRAM Requirements
 
 **Minimum:** 10GB VRAM
 - Use FP16 or BF16 model

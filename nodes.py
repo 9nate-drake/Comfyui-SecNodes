@@ -84,7 +84,7 @@ def apply_fp8_weight_only_quantization(model, precision_str):
         print(f"  3. Model performance will be identical and 100% reliable")
         print(f"")
         print(f"📚 Full technical details:")
-        print(f"  .claude/fp8-scene-detection-failure-analysis.md")
+        print(f"  CHANGELOG.md")
         print(f"")
         print(f"🔮 Future: Exploring bitsandbytes 4-bit quantization")
         print(f"  Could provide 6GB savings with better stability")

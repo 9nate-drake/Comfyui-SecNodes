@@ -1250,8 +1250,13 @@ class SeCVideoSegmentation:
             if max_frames_to_track == -1:
                 max_frames_to_track = len(pil_images)
 
-            video_segments = {}
-            
+            # Pre-allocate output tensor and object IDs list (Phase 3 optimization)
+            # Eliminates video_segments dictionary accumulation (~110-150MB for 150 frames)
+            # and the 500MB VRAM spike from copying dict → GPU tensor
+            num_frames = len(pil_images)
+            masks_tensor = torch.zeros(num_frames, frames.shape[1], frames.shape[2], dtype=torch.float32)
+            output_obj_ids = [0] * num_frames
+
             if tracking_direction == "bidirectional":
                 for out_frame_idx, out_obj_ids, out_mask_logits in model.propagate_in_video(
                     inference_state,
@@ -1261,10 +1266,12 @@ class SeCVideoSegmentation:
                     init_mask=init_mask,
                     mllm_memory_size=mllm_memory_size,
                 ):
-                    video_segments[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
+                    # Write directly to pre-allocated tensor (Phase 3)
+                    for i, out_obj_id in enumerate(out_obj_ids):
+                        mask = (out_mask_logits[i] > 0.0).cpu()
+                        masks_tensor[out_frame_idx] = mask.float()
+                        output_obj_ids[out_frame_idx] = out_obj_id
+                        break  # Only handle first object per frame
 
                 model.grounding_encoder.reset_state(inference_state)
 
@@ -1293,11 +1300,14 @@ class SeCVideoSegmentation:
                     init_mask=init_mask,
                     mllm_memory_size=mllm_memory_size,
                 ):
-                    if out_frame_idx not in video_segments:
-                        video_segments[out_frame_idx] = {
-                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                            for i, out_obj_id in enumerate(out_obj_ids)
-                        }
+                    # Write directly to pre-allocated tensor if not already written (Phase 3)
+                    # Check if frame was already processed in forward pass
+                    if output_obj_ids[out_frame_idx] == 0:
+                        for i, out_obj_id in enumerate(out_obj_ids):
+                            mask = (out_mask_logits[i] > 0.0).cpu()
+                            masks_tensor[out_frame_idx] = mask.float()
+                            output_obj_ids[out_frame_idx] = out_obj_id
+                            break  # Only handle first object per frame
             else:
                 reverse = (tracking_direction == "backward")
                 for out_frame_idx, out_obj_ids, out_mask_logits in model.propagate_in_video(
@@ -1308,30 +1318,14 @@ class SeCVideoSegmentation:
                     init_mask=init_mask,
                     mllm_memory_size=mllm_memory_size,
                 ):
-                    video_segments[out_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
-                    }
-            
-            # Create output masks for all input frames
-            # Frames not in video_segments get empty masks
-            # Pre-allocate tensor to avoid VRAM spike from torch.stack()
-            num_frames = len(pil_images)
+                    # Write directly to pre-allocated tensor (Phase 3)
+                    for i, out_obj_id in enumerate(out_obj_ids):
+                        mask = (out_mask_logits[i] > 0.0).cpu()
+                        masks_tensor[out_frame_idx] = mask.float()
+                        output_obj_ids[out_frame_idx] = out_obj_id
+                        break  # Only handle first object per frame
 
-            # Pre-allocate output tensor (avoids memory spike at the end)
-            masks_tensor = torch.zeros(num_frames, frames.shape[1], frames.shape[2], dtype=torch.float32)
-            output_obj_ids = []
-
-            for frame_idx in range(num_frames):
-                if frame_idx in video_segments:
-                    # Frame was tracked - use real mask
-                    for obj_id, mask in video_segments[frame_idx].items():
-                        masks_tensor[frame_idx] = torch.from_numpy(mask.astype(np.float32))
-                        output_obj_ids.append(obj_id)
-                else:
-                    # Frame not tracked - already zero-initialized
-                    output_obj_ids.append(0)
-
+            # Convert output_obj_ids list to tensor
             obj_ids_tensor = torch.tensor(output_obj_ids, dtype=torch.int32)
 
             return (masks_tensor, obj_ids_tensor)

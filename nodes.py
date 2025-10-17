@@ -257,7 +257,6 @@ class SeCModelLoader:
         config_path = selected_model['config_path']
         precision_str = selected_model['precision']
 
-        print(f"\n{'='*70}")
         print(f"Loading SeC model: {os.path.basename(model_path) if is_single_file else 'SeC-4B (sharded)'} [{precision_str.upper()}]")
 
         # Handle device selection
@@ -330,16 +329,7 @@ class SeCModelLoader:
             # Load model differently based on format
             if is_single_file:
                 # Manual instantiation and weight loading for single-file models
-                # Use init_empty_weights to avoid initializing 4B parameters (saves ~30s)
-                try:
-                    from accelerate import init_empty_weights
-                    with init_empty_weights():
-                        model = SeCModel(config, use_flash_attn=use_flash_attn)
-                    # Materialize meta tensors to CPU (no GPU memory used yet)
-                    model = model.to_empty(device='cpu')
-                except (ImportError, RuntimeError):
-                    model = SeCModel(config, use_flash_attn=use_flash_attn)
-
+                model = SeCModel(config, use_flash_attn=use_flash_attn)
                 state_dict = load_file(model_path)
 
                 # Convert FP8 weights to FP16 if needed
@@ -383,6 +373,7 @@ class SeCModelLoader:
             model.preparing_for_generation(tokenizer=tokenizer, torch_dtype=torch_dtype)
 
             if device.startswith("cuda") and torch_dtype != torch.float32:
+                #print(f"Installing dtype conversion hooks...")
 
                 def dtype_conversion_hook(module, args, kwargs):
                     try:
@@ -431,7 +422,13 @@ class SeCModelLoader:
 
             # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(model, precision_str)
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG] apply_fp8_weight_only_quantization returned: {quantization_result}")
+                if not quantization_result and DEBUG_SEC:
+                    print(f"[FP8-DEBUG] WARNING: Quantization returned False, model may be running at FP16 without quantization!")
 
             print(f"✓ Model loaded on {device}")
 
@@ -903,16 +900,7 @@ class SeCVideoSegmentation:
             # Load model based on format
             if is_single_file:
                 # Manual instantiation for single-file models
-                # Use init_empty_weights to avoid initializing 4B parameters (saves ~30s)
-                try:
-                    from accelerate import init_empty_weights
-                    with init_empty_weights():
-                        fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
-                    # Materialize meta tensors to CPU (no GPU memory used yet)
-                    fresh_model = fresh_model.to_empty(device='cpu')
-                except (ImportError, RuntimeError):
-                    fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
-
+                fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
                 state_dict = load_file(model_path)
 
                 # Convert FP8 weights to FP16 if needed (same as initial load)
@@ -933,6 +921,7 @@ class SeCVideoSegmentation:
                     fresh_model = fresh_model.to(device=device, dtype=torch_dtype)
                 else:
                     fresh_model = fresh_model.to(device="cpu", dtype=torch_dtype)
+
             else:
                 # Directory-based loading for sharded models
                 load_kwargs = {
@@ -1008,7 +997,13 @@ class SeCVideoSegmentation:
 
             # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG-RELOAD] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(fresh_model, precision_str)
+                if DEBUG_SEC:
+                    print(f"[FP8-DEBUG-RELOAD] apply_fp8_weight_only_quantization returned: {quantization_result}")
+                if not quantization_result and DEBUG_SEC:
+                    print(f"[FP8-DEBUG-RELOAD] WARNING: Quantization returned False, reloaded model may be running at FP16 without quantization!")
 
             # Copy all attributes from fresh model to original model
             for attr_name in dir(fresh_model):

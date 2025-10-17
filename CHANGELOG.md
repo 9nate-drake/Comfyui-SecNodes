@@ -2,23 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.1] - 2025-10-18
-
-### Performance
-- **Major model loading speedup**: Reduced from 40+ seconds to ~10 seconds
-  - Implemented `accelerate.init_empty_weights()` to skip unnecessary parameter initialization
-  - Model instantiation reduced from ~32s to ~0.4s (80x speedup)
-  - Materializes meta tensors to CPU (no GPU pre-allocation) before loading weights
-  - Applied optimization to both initial load and auto-reload paths
-
-### Fixed
-- Model loading VRAM spike eliminated by proper meta tensor handling
-  - Uses `to_empty(device='cpu')` to materialize parameters on CPU
-  - Avoids pre-allocating all 4B parameters on GPU during loading
-  - Results in ~1-2GB peak memory reduction during model load phase
-
----
-
 ## [1.2.0] - 2025-10-16
 
 ### Breaking Changes

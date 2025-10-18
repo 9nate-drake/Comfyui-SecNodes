@@ -28,7 +28,8 @@ from transformers import StoppingCriteriaList, StoppingCriteria
 from .configuration_sec import SeCConfig
 from .modeling_intern_vit import InternVisionModel, has_flash_attn
 
-from .sam2_video_predictor import build_sam2_video_predictor, SAM2VideoPredictor
+# Note: SAM2 video predictor is now imported lazily inside SeCModel.__init__()
+# This prevents eager loading during ComfyUI startup and avoids Hydra conflicts
 from .templates import PROMPT_TEMPLATE
 
 import cv2
@@ -167,9 +168,14 @@ class SeCModel(PreTrainedModel):
         if config.use_llm_lora:
             self.wrap_llm_lora(r=config.use_llm_lora, lora_alpha=2 * config.use_llm_lora)
 
+        # Create grounding encoder (SAM2) - now with lazy loading
         apply_postprocessing = getattr(config, 'apply_postprocessing', True)
         hydra_overrides_extra = getattr(config, 'hydra_overrides_extra', [])
         grounding_maskmem_num = getattr(config, 'grounding_maskmem_num', 22)
+
+        # Import SAM2 components only when actually building the predictor
+        from .sam2_video_predictor import build_sam2_video_predictor
+
         self.grounding_encoder = build_sam2_video_predictor(
             config.grounding_encoder_config,
             num_maskmem=grounding_maskmem_num,

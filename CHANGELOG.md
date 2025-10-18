@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2025-10-18
+
+### Performance
+- **Major model loading speedup**: Reduced from 40+ seconds to ~10 seconds
+  - Implemented `accelerate.init_empty_weights()` to skip unnecessary parameter initialization
+  - Model instantiation reduced from ~32s to ~0.4s (80x speedup)
+  - Uses `set_module_tensor_to_device()` to properly initialize model state
+  - Applied optimization to both initial load and auto-reload paths
+    
 ## [1.2.0] - 2025-10-16
 
 ### Breaking Changes

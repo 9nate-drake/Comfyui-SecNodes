@@ -174,7 +174,7 @@ class SeCModel(PreTrainedModel):
         grounding_maskmem_num = getattr(config, 'grounding_maskmem_num', 22)
 
         # Import SAM2 components only when actually building the predictor
-        from .sam2_video_predictor import build_sam2_video_predictor, SAM2VideoPredictor
+        from .sam2_video_predictor import build_sam2_video_predictor
 
         self.grounding_encoder = build_sam2_video_predictor(
             config.grounding_encoder_config,

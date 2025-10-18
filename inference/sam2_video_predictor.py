@@ -11,7 +11,11 @@ from tqdm import tqdm
 
 from omegaconf import OmegaConf
 
-# Note: SAM2 components are now imported lazily inside build_sam2_video_predictor()
+# Import SAM2 utility functions at module level (safe - doesn't trigger Hydra)
+from .sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
+from .sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
+
+# Note: SAM2 main components are imported lazily inside build_sam2_video_predictor()
 # This prevents eager loading during ComfyUI startup and avoids Hydra conflicts
 
 def _import_sam2_components():
@@ -23,8 +27,6 @@ def _import_sam2_components():
     # Import SAM2 components
     from .sam2.sam2_video_predictor import SAM2VideoPredictor as _SAM2VideoPredictor
     from .sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
-    from .sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
-    from .sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
 
     # Import all required classes for local instantiation - complete isolation from global imports
     from .sam2.modeling.backbones.hieradet import Hiera
@@ -38,12 +40,6 @@ def _import_sam2_components():
         "SAM2VideoPredictor": _SAM2VideoPredictor,
         "SAM2Base": SAM2Base,
         "NO_OBJ_SCORE": NO_OBJ_SCORE,
-        "concat_points": concat_points,
-        "fill_holes_in_mask_scores": fill_holes_in_mask_scores,
-        "load_video_frames": load_video_frames,
-        "get_1d_sine_pe": get_1d_sine_pe,
-        "MLP": MLP,
-        "select_closest_cond_frames": select_closest_cond_frames,
         "Hiera": Hiera,
         "ImageEncoder": ImageEncoder,
         "FpnNeck": FpnNeck,

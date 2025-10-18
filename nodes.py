@@ -46,7 +46,6 @@ def supports_fp8_quantization():
         return False
 
     major, minor = capability
-    # Ampere (8.6) and newer support weight-only FP8 via Marlin kernels
     return (major > 8) or (major == 8 and minor >= 6)
 
 
@@ -70,7 +69,6 @@ def apply_fp8_weight_only_quantization(model, precision_str):
         bool: Always False - FP8 quantization disabled
     """
 
-    # FP8 quantization is deprecated - always return False
     if precision_str == "fp8":
         print(f"⚠️  FP8 Model Support Removed")
         print(f"─" * 70)
@@ -126,17 +124,15 @@ def get_available_sec_models():
             if os.path.exists(model_path) and os.path.isfile(model_path):
                 config_path = get_repo_config_path()
                 available_models.append({
-                    'name': filename,  # Display actual filename
+                    'name': filename,
                     'path': model_path,
                     'is_single_file': True,
                     'config_path': config_path,
                     'precision': precision
                 })
 
-        # Check for sharded model directory (original format)
         model_dir = os.path.join(sams_dir, "SeC-4B")
         if os.path.exists(model_dir) and os.path.isdir(model_dir):
-            # Verify required files exist
             config_exists = os.path.exists(os.path.join(model_dir, "config.json"))
             model_exists = (
                 os.path.exists(os.path.join(model_dir, "model.safetensors")) or
@@ -152,7 +148,7 @@ def get_available_sec_models():
                     'path': model_dir,
                     'is_single_file': False,
                     'config_path': model_dir,
-                    'precision': 'fp16'  # Original format is typically fp16
+                    'precision': 'fp16'
                 })
 
     return available_models
@@ -169,14 +165,8 @@ def find_sec_model():
     if not available_models:
         return None, False, None
 
-    # Return the first model (highest priority)
     model = available_models[0]
     return model['path'], model['is_single_file'], model['config_path']
-
-
-# Auto-download functionality removed per user request
-# Users should manually download models using huggingface-cli or git lfs
-# See README.md for download instructions
 
 
 class SeCModelLoader:
@@ -186,7 +176,6 @@ class SeCModelLoader:
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Dynamically build device list based on available GPUs
         device_choices = ["auto", "cpu"]
 
         if torch.cuda.is_available():
@@ -194,7 +183,6 @@ class SeCModelLoader:
             for i in range(gpu_count):
                 device_choices.append(f"gpu{i}")
 
-        # Dynamically scan for available models
         available_models = get_available_sec_models()
         if available_models:
             model_choices = [model['name'] for model in available_models]
@@ -232,8 +220,6 @@ class SeCModelLoader:
 
     def load_model(self, model_file, device, use_flash_attn=True, allow_mask_overlap=True):
         """Load SeC model"""
-
-        # Get available models and find the selected one
         available_models = get_available_sec_models()
 
         selected_model = None
@@ -242,7 +228,6 @@ class SeCModelLoader:
                 selected_model = model
                 break
 
-        # Error if no model found
         if selected_model is None or "(No models found" in model_file:
             raise RuntimeError(
                 "No SeC model found in ComfyUI/models/sams/\n\n"
@@ -257,15 +242,14 @@ class SeCModelLoader:
         config_path = selected_model['config_path']
         precision_str = selected_model['precision']
 
+        print(f"\n{'='*70}")
         print(f"Loading SeC model: {os.path.basename(model_path) if is_single_file else 'SeC-4B (sharded)'} [{precision_str.upper()}]")
 
-        # Handle device selection
         if device == "auto":
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         elif device.startswith("gpu"):
-            # Map gpu0 -> cuda:0, gpu1 -> cuda:1, etc.
             try:
-                gpu_num = int(device[3:])  # Extract number after "gpu"
+                gpu_num = int(device[3:])
                 if torch.cuda.is_available():
                     available_gpus = torch.cuda.device_count()
                     if gpu_num >= available_gpus:
@@ -278,9 +262,6 @@ class SeCModelLoader:
                     raise ValueError(f"Invalid GPU device format: '{device}'. Expected format: 'gpu0', 'gpu1', etc.")
                 raise
 
-        # Map model precision to torch dtype
-        # Note: FP8 models are stored as FP8 but must be converted to FP16 for inference
-        # due to PyTorch/cuDNN limitations with FP8 convolutions
         dtype_map = {
             "bfloat16": torch.bfloat16,
             "bf16": torch.bfloat16,
@@ -288,24 +269,21 @@ class SeCModelLoader:
             "fp16": torch.float16,
             "float32": torch.float32,
             "fp32": torch.float32,
-            "fp8": torch.float16  # FP8 files converted to FP16 for inference (cuDNN limitation)
+            "fp8": torch.float16
         }
 
         torch_dtype = dtype_map.get(precision_str, torch.float16)
 
-        # Special message for FP8 models
         if precision_str == "fp8":
             if supports_fp8_quantization():
                 print(f"FP8 model: converting to FP16, then applying weight-only quantization")
             else:
                 print(f"FP8 model: converting to FP16 for inference (GPU doesn't support FP8 quantization)")
 
-        # Force float32 for CPU mode to avoid dtype mismatches
         if device == "cpu" and torch_dtype != torch.float32:
             print(f"⚠ CPU mode requires float32 precision. Model will be converted from {precision_str.upper()} -> FP32 on load")
             torch_dtype = torch.float32
 
-        # Flash Attention requires float16/bfloat16 - auto-disable for float32
         if torch_dtype == torch.float32 and use_flash_attn:
             print(f"⚠ Flash Attention not compatible with FP32. Disabling Flash Attention.")
             print("  Note: Inference will use standard attention")
@@ -316,44 +294,60 @@ class SeCModelLoader:
         hydra_overrides_extra.append(f"++model.non_overlap_masks={overlap_value}")
 
         try:
-            # Load config from appropriate location (config_path for single files, model_path for directories)
             config = SeCConfig.from_pretrained(config_path)
             config.hydra_overrides_extra = hydra_overrides_extra
 
-            # Prepare for GPU loading
             if device.startswith("cuda:"):
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
 
-            # Load model differently based on format
             if is_single_file:
-                # Manual instantiation and weight loading for single-file models
-                model = SeCModel(config, use_flash_attn=use_flash_attn)
-                state_dict = load_file(model_path)
+                try:
+                    from accelerate import init_empty_weights
+                    from accelerate.utils import set_module_tensor_to_device
 
-                # Convert FP8 weights to FP16 if needed
-                if precision_str == "fp8":
-                    converted_state_dict = {}
-                    for key, tensor in state_dict.items():
-                        if tensor.dtype == torch.float8_e4m3fn:
-                            converted_state_dict[key] = tensor.to(torch.float16)
-                        else:
-                            converted_state_dict[key] = tensor
-                    state_dict = converted_state_dict
+                    with init_empty_weights():
+                        model = SeCModel(config, use_flash_attn=use_flash_attn)
 
-                # Load state dict into model
-                model.load_state_dict(state_dict, strict=True)
-                model = model.eval()
+                    state_dict = load_file(model_path)
 
-                # Move to target device and convert dtype if needed
+                    if precision_str == "fp8":
+                        converted_state_dict = {}
+                        for key, tensor in state_dict.items():
+                            if tensor.dtype == torch.float8_e4m3fn:
+                                converted_state_dict[key] = tensor.to(torch.float16)
+                            else:
+                                converted_state_dict[key] = tensor
+                        state_dict = converted_state_dict
+
+                    for name, param in state_dict.items():
+                        set_module_tensor_to_device(model, name, device='cpu', value=param)
+
+                    model = model.eval()
+
+                except (ImportError, RuntimeError) as e:
+                    model = SeCModel(config, use_flash_attn=use_flash_attn)
+                    state_dict = load_file(model_path)
+
+                    if precision_str == "fp8":
+                        converted_state_dict = {}
+                        for key, tensor in state_dict.items():
+                            if tensor.dtype == torch.float8_e4m3fn:
+                                converted_state_dict[key] = tensor.to(torch.float16)
+                            else:
+                                converted_state_dict[key] = tensor
+                        state_dict = converted_state_dict
+
+                    model.load_state_dict(state_dict, strict=True)
+                    model = model.eval()
+
                 if device.startswith("cuda:"):
                     model = model.to(device=device, dtype=torch_dtype)
                 else:
                     model = model.to(device="cpu", dtype=torch_dtype)
 
             else:
-                # Directory-based loading for sharded models (original approach)
                 load_kwargs = {
                     "config": config,
                     "torch_dtype": torch_dtype,
@@ -361,19 +355,17 @@ class SeCModelLoader:
                 }
 
                 if device.startswith("cuda:"):
-                    load_kwargs["device_map"] = {"": device}  # Force to specific GPU
+                    load_kwargs["device_map"] = {"": device}
                     load_kwargs["low_cpu_mem_usage"] = True
                 else:
                     load_kwargs["low_cpu_mem_usage"] = True
 
                 model = SeCModel.from_pretrained(model_path, **load_kwargs).eval()
 
-            # Load tokenizer from config location (not weights location for single files)
             tokenizer = AutoTokenizer.from_pretrained(config_path, trust_remote_code=True)
             model.preparing_for_generation(tokenizer=tokenizer, torch_dtype=torch_dtype)
 
             if device.startswith("cuda") and torch_dtype != torch.float32:
-                #print(f"Installing dtype conversion hooks...")
 
                 def dtype_conversion_hook(module, args, kwargs):
                     try:
@@ -420,19 +412,11 @@ class SeCModelLoader:
                     if len(list(module.parameters(recurse=False))) > 0:
                         module.register_forward_pre_hook(dtype_conversion_hook, with_kwargs=True)
 
-            # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
-                if DEBUG_SEC:
-                    print(f"[FP8-DEBUG] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(model, precision_str)
-                if DEBUG_SEC:
-                    print(f"[FP8-DEBUG] apply_fp8_weight_only_quantization returned: {quantization_result}")
-                if not quantization_result and DEBUG_SEC:
-                    print(f"[FP8-DEBUG] WARNING: Quantization returned False, model may be running at FP16 without quantization!")
 
             print(f"✓ Model loaded on {device}")
 
-            # Store loading metadata for potential auto-reload
             model._sec_loading_metadata = {
                 'model_path': model_path,
                 'is_single_file': is_single_file,
@@ -570,14 +554,12 @@ class SeCVideoSegmentation:
                     x = float(point_dict['x'])
                     y = float(point_dict['y'])
 
-                    # Validate coordinates are non-negative
                     if x < 0 or y < 0:
                         err = f"Point {i} has negative coordinates ({x}, {y})"
                         print(f"Warning: {err}, skipping")
                         validation_errors.append(err)
                         continue
 
-                    # Validate within image bounds if provided
                     if image_shape is not None:
                         height, width = image_shape[1], image_shape[2]  # [batch, height, width, channels]
                         if x >= width or y >= height:
@@ -619,10 +601,7 @@ class SeCVideoSegmentation:
         try:
             coords = None
 
-            # Try to extract coordinates regardless of type checks
-            # This handles cases where ComfyUI wraps data in unexpected ways
             if hasattr(bbox, '__iter__') and not isinstance(bbox, (str, bytes)):
-                # It's some kind of sequence
                 try:
                     bbox_list = list(bbox)
 
@@ -631,9 +610,7 @@ class SeCVideoSegmentation:
 
                     first_elem = bbox_list[0]
 
-                    # Try to access as dict-like (KJNodes format)
                     try:
-                        # Use getitem access instead of isinstance check
                         if hasattr(first_elem, '__getitem__'):
                             try:
                                 x1 = float(first_elem['startX'])
@@ -642,16 +619,12 @@ class SeCVideoSegmentation:
                                 y2 = float(first_elem['endY'])
                                 coords = [x1, y1, x2, y2]
                             except (KeyError, TypeError):
-                                # Not dict format, might be numeric sequence
                                 pass
 
-                        # If still no coords, try as numeric sequence
                         if coords is None:
                             if len(bbox_list) == 4:
-                                # Direct 4-element tuple/list: (x1, y1, x2, y2)
                                 coords = [float(x) for x in bbox_list]
                             elif hasattr(first_elem, '__iter__') and not isinstance(first_elem, (str, bytes)):
-                                # Nested sequence: [[x1, y1, x2, y2]]
                                 inner = list(first_elem)
                                 if len(inner) == 4:
                                     coords = [float(x) for x in inner]
@@ -662,7 +635,6 @@ class SeCVideoSegmentation:
                 except Exception as e:
                     raise ValueError(f"Failed to process bbox as sequence: {e}")
 
-            # Try single dict format
             elif hasattr(bbox, '__getitem__'):
                 try:
                     x1 = float(bbox['startX'])
@@ -679,16 +651,12 @@ class SeCVideoSegmentation:
             if coords is None:
                 raise ValueError(f"Could not extract coordinates from bbox. Type: {type(bbox)}, Content: {repr(bbox)[:200]}")
 
-            # Handle xywh format (convert to xyxy)
             x1, y1, x2, y2 = coords
             if x2 < x1 or y2 < y1:
-                # Assume xywh format: (x, y, width, height)
                 width, height = x2, y2
                 x2 = x1 + width
                 y2 = y1 + height
                 coords = [x1, y1, x2, y2]
-
-            # Validate coordinates
             if coords[0] >= coords[2]:
                 raise ValueError(f"Invalid bbox: x1 ({coords[0]}) must be < x2 ({coords[2]})")
             if coords[1] >= coords[3]:
@@ -740,14 +708,11 @@ class SeCVideoSegmentation:
         """Save frames temporarily for video processing"""
         import tempfile
 
-        # Use system temp directory for cross-platform compatibility
         if temp_dir is None:
             temp_base = tempfile.gettempdir()
             temp_dir = os.path.join(temp_base, "sec_frames")
 
         os.makedirs(temp_dir, exist_ok=True)
-
-        # Clean up old files safely
         try:
             for file in os.listdir(temp_dir):
                 if file.endswith(('.jpg', '.png')):
@@ -776,10 +741,8 @@ class SeCVideoSegmentation:
             if hasattr(model, 'device'):
                 original_device = model.device
 
-            # Preserve loading metadata before cleanup
             loading_metadata = getattr(model, '_sec_loading_metadata', None)
 
-            # Clear SAM2 inference states first
             if hasattr(model, 'grounding_encoder'):
                 try:
                     if hasattr(model.grounding_encoder, '_states'):
@@ -787,10 +750,7 @@ class SeCVideoSegmentation:
                 except:
                     pass
 
-            # Step 2: Delete all model components to free memory
             components_deleted = []
-
-            # Main components that take the most memory
             main_components = ['vision_model', 'language_model', 'grounding_encoder', 'tokenizer']
             for component in main_components:
                 if hasattr(model, component):
@@ -900,28 +860,58 @@ class SeCVideoSegmentation:
             # Load model based on format
             if is_single_file:
                 # Manual instantiation for single-file models
-                fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
-                state_dict = load_file(model_path)
+                # Use init_empty_weights to avoid initializing 4B parameters (saves ~30s)
+                try:
+                    from accelerate import init_empty_weights
+                    from accelerate.utils import set_module_tensor_to_device
 
-                # Convert FP8 weights to FP16 if needed (same as initial load)
-                if precision_str == "fp8":
-                    converted_state_dict = {}
-                    for key, tensor in state_dict.items():
-                        if tensor.dtype == torch.float8_e4m3fn:
-                            converted_state_dict[key] = tensor.to(torch.float16)
-                        else:
-                            converted_state_dict[key] = tensor
-                    state_dict = converted_state_dict
+                    # Step 1: Create model structure without initializing parameters
+                    with init_empty_weights():
+                        fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
 
-                fresh_model.load_state_dict(state_dict, strict=True)
-                fresh_model = fresh_model.eval()
+                    # Step 2: Load state dict (fast since model has no actual tensors yet)
+                    state_dict = load_file(model_path)
+
+                    # Convert FP8 weights to FP16 if needed (same as initial load)
+                    if precision_str == "fp8":
+                        converted_state_dict = {}
+                        for key, tensor in state_dict.items():
+                            if tensor.dtype == torch.float8_e4m3fn:
+                                converted_state_dict[key] = tensor.to(torch.float16)
+                            else:
+                                converted_state_dict[key] = tensor
+                        state_dict = converted_state_dict
+
+                    # Step 3: Manually assign each tensor to the model on CPU
+                    # This properly initializes buffers and other state
+                    for name, param in state_dict.items():
+                        set_module_tensor_to_device(fresh_model, name, device='cpu', value=param)
+
+                    fresh_model = fresh_model.eval()
+
+                except (ImportError, RuntimeError) as e:
+                    # Fallback to standard loading if accelerate not available
+                    fresh_model = SeCModel(config, use_flash_attn=use_flash_attn)
+                    state_dict = load_file(model_path)
+
+                    # Convert FP8 weights to FP16 if needed (same as initial load)
+                    if precision_str == "fp8":
+                        converted_state_dict = {}
+                        for key, tensor in state_dict.items():
+                            if tensor.dtype == torch.float8_e4m3fn:
+                                converted_state_dict[key] = tensor.to(torch.float16)
+                            else:
+                                converted_state_dict[key] = tensor
+                        state_dict = converted_state_dict
+
+                    fresh_model.load_state_dict(state_dict, strict=True)
+                    fresh_model = fresh_model.eval()
 
                 # Move to device and convert dtype
                 if device.startswith("cuda:"):
                     fresh_model = fresh_model.to(device=device, dtype=torch_dtype)
                 else:
                     fresh_model = fresh_model.to(device="cpu", dtype=torch_dtype)
-
             else:
                 # Directory-based loading for sharded models
                 load_kwargs = {
@@ -997,13 +987,7 @@ class SeCVideoSegmentation:
 
             # Apply FP8 weight-only quantization if applicable (after model is on device)
             if device.startswith("cuda:"):
-                if DEBUG_SEC:
-                    print(f"[FP8-DEBUG-RELOAD] About to call apply_fp8_weight_only_quantization with precision_str='{precision_str}'")
                 quantization_result = apply_fp8_weight_only_quantization(fresh_model, precision_str)
-                if DEBUG_SEC:
-                    print(f"[FP8-DEBUG-RELOAD] apply_fp8_weight_only_quantization returned: {quantization_result}")
-                if not quantization_result and DEBUG_SEC:
-                    print(f"[FP8-DEBUG-RELOAD] WARNING: Quantization returned False, reloaded model may be running at FP16 without quantization!")
 
             # Copy all attributes from fresh model to original model
             for attr_name in dir(fresh_model):

@@ -17,7 +17,7 @@ from omegaconf import OmegaConf
 def _import_sam2_components():
     """Import all SAM2 components lazily when needed."""
     # Import SAM2 Hydra initialization first
-    from . import init_sam2_hydra
+    from .sam2 import init_sam2_hydra
     init_sam2_hydra()
 
     # Import SAM2 components

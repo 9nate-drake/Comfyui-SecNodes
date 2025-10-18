@@ -2,11 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.2] - 2025-10-18
-
-### Changed
-- implemented lazy loading for SAM2 components to fix possible global Hydra conflicts during ComfyUI startup
-    
 ## [1.2.1] - 2025-10-18
 
 ### Performance
